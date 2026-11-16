@@ -21,6 +21,7 @@
 #include "TracySourceView.hpp"
 #include "TracyTexture.hpp"
 #include "TracyView.hpp"
+#include "../tracyx/TracyXPanel.hpp"
 #include "../server/TracySysUtil.hpp"
 #include "../public/common/TracyStackFrames.hpp"
 #include "../Fonts.hpp"
@@ -1210,6 +1211,10 @@ bool View::DrawImpl()
 
     ImGui::End();
     ImGui::End();
+
+    if( !m_tracyxPanel ) m_tracyxPanel = std::make_unique<tracyx_viewer::Panel>();
+    m_tracyxPanel->Draw( m_filename, m_worker, m_frames, m_vd.zvStart, m_vd.zvEnd, m_frameHover,
+        [this]( int64_t begin, int64_t end ) { ZoomToRange( begin, end ); } );
 
     m_zoneHighlight = nullptr;
     m_gpuHighlight = nullptr;

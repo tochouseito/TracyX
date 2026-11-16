@@ -43,6 +43,8 @@
 namespace tracy
 {
 
+namespace tracyx_viewer { class Panel; }
+
 constexpr const char* GpuContextNames[] = {
     "Invalid",
     "OpenGL",
@@ -574,6 +576,7 @@ private:
 
     ViewData m_vd;
     TimelineController m_tc;
+    std::unique_ptr<tracyx_viewer::Panel> m_tracyxPanel;
     KeyboardNavigation m_kbNavCtrl;
 
     const ZoneEvent* m_zoneInfoWindow = nullptr;
