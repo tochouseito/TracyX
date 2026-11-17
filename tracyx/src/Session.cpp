@@ -176,7 +176,7 @@ bool ReadEvent( std::string_view line, Event& event )
     if( !ReadNumber( line, "version", version ) || version != SessionVersion ||
         !ReadNumber( line, "event_id", event.eventId ) ||
         !ReadNumber( line, "source", source ) || source > static_cast<uint64_t>( Source::Pix ) ||
-        !ReadNumber( line, "kind", kind ) || kind > static_cast<uint64_t>( EventKind::Unknown ) ||
+        !ReadNumber( line, "kind", kind ) || kind > static_cast<uint64_t>( EventKind::ResourceDestroy ) ||
         !ReadNumber( line, "clock", clock ) || clock > static_cast<uint64_t>( ClockDomain::PresentMon ) ||
         !ReadNumber( line, "raw_timestamp", event.rawTimestamp ) ||
         !ReadNumber( line, "has_raw_end", hasRawEnd ) || hasRawEnd > 1 ||

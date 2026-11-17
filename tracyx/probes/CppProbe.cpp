@@ -1,5 +1,6 @@
 #include <tracy/Tracy.hpp>
 #include "tracyx/TracyMemory.hpp"
+#include "tracyx/DredBridge.hpp"
 
 #include <atomic>
 #include <cassert>

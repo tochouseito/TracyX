@@ -51,6 +51,10 @@ const char* KindName( tracyx::EventKind kind )
     case tracyx::EventKind::Residency: return "Residency";
     case tracyx::EventKind::RuntimeError: return "Runtime error";
     case tracyx::EventKind::CustomCounter: return "Counter";
+    case tracyx::EventKind::StorageRead: return "Storage read";
+    case tracyx::EventKind::StorageSubmit: return "Storage submit";
+    case tracyx::EventKind::ResourceCreate: return "Resource create";
+    case tracyx::EventKind::ResourceDestroy: return "Resource destroy";
     default: return "Unknown";
     }
 }
@@ -673,19 +677,26 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         constexpr float rowHeight = 22.0f;
         const auto first = m_aligned.begin();
         using Lane = std::tuple<uint8_t, uint64_t, uint64_t>;
+        const auto laneOf = []( const tracyx::Event& event ) -> Lane {
+            if( event.source == tracyx::Source::PresentMon ) return { 1, event.swapChainId, 0 };
+            if( event.kind == tracyx::EventKind::StorageRead || event.kind == tracyx::EventKind::StorageSubmit )
+                return { 2, event.queueId, 0 };
+            if( event.kind == tracyx::EventKind::ResourceCreate || event.kind == tracyx::EventKind::ResourceDestroy )
+                return { 3, event.resourceId, 0 };
+            return { 0, event.queueId, 0 };
+        };
         std::vector<Lane> lanes;
         for( auto it = first; it != m_aligned.end() && it->begin < viewEnd; ++it )
         {
             if( it->end < viewBegin ) continue;
             const auto& event = m_session.events[it->index];
-            const Lane lane = event.source == tracyx::Source::PresentMon
-                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
+            const Lane lane = laneOf( event );
             if( std::find( lanes.begin(), lanes.end(), lane ) == lanes.end() ) lanes.push_back( lane );
         }
         if( m_selected > 0 && m_selected <= m_session.events.size() )
         {
             const auto& selected = m_session.events[m_selected - 1];
-            if( selected.source != tracyx::Source::PresentMon && selected.commandListId != 0 )
+            if( std::get<0>( laneOf( selected ) ) == 0 && selected.commandListId != 0 )
                 lanes.push_back( { 0, selected.queueId, selected.commandListId } );
         }
         std::sort( lanes.begin(), lanes.end() );
@@ -704,6 +715,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             const auto top = origin.y + row * rowHeight;
             const auto [laneType, laneId, detailId] = lanes[row];
             const auto label = laneType == 1 ? "Present swap chain " + std::to_string( laneId )
+                : laneType == 2 ? "DirectStorage queue " + std::to_string( laneId )
+                : laneType == 3 ? "D3D12 resource " + std::to_string( laneId )
                 : detailId == 0 ? "DX queue " + std::to_string( laneId )
                 : "DX queue " + std::to_string( laneId ) + " / command list " + std::to_string( detailId );
             draw->AddText( { origin.x + 3, top + 2 }, IM_COL32( 220, 220, 220, 255 ),
@@ -716,8 +729,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             if( it->end < viewBegin ) continue;
             ++drawn;
             const auto& event = m_session.events[it->index];
-            const Lane lane = event.source == tracyx::Source::PresentMon
-                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
+            const Lane lane = laneOf( event );
             const auto rowIt = std::lower_bound( lanes.begin(), lanes.end(), lane );
             if( rowIt == lanes.end() || *rowIt != lane ) continue;
             const auto left = origin.x + static_cast<float>( std::clamp( ( it->begin - viewBegin ) / span, 0.0, 1.0 ) * width );

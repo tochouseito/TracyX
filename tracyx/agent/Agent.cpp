@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <limits>
@@ -223,6 +224,110 @@ private:
     AgentState& m_state;
 };
 
+class StorageCallbacks final : public NoOpDirectStorageCallbacks
+{
+public:
+    explicit StorageCallbacks( AgentState& state ) : m_state( state ) {}
+
+    HRESULT OnDirectStorageReadRequest( const ReadRequest& request ) override
+    {
+        if( request.EnqueueTimestamp < 0 || request.CompletionTimestamp < request.EnqueueTimestamp ) return S_OK;
+        tracyx::Event event;
+        event.kind = tracyx::EventKind::StorageRead;
+        event.rawTimestamp = static_cast<uint64_t>( request.EnqueueTimestamp );
+        event.rawEndTimestamp = static_cast<uint64_t>( request.CompletionTimestamp );
+        event.process = m_state.session.manifest.process;
+        event.threadId = request.EnqueueThreadId;
+        event.queueId = request.QueueId;
+        event.resourceId = request.FileId;
+        event.label = "DirectStorage read " + std::to_string( request.Size ) + " bytes";
+        m_state.Push( std::move( event ) );
+        return S_OK;
+    }
+
+    HRESULT OnDirectStorageSubmit( const Submit& submit ) override
+    {
+        if( submit.Timestamp < 0 ) return S_OK;
+        tracyx::Event event;
+        event.kind = tracyx::EventKind::StorageSubmit;
+        event.rawTimestamp = static_cast<uint64_t>( submit.Timestamp );
+        event.process = m_state.session.manifest.process;
+        event.threadId = submit.EnqueueThreadId;
+        event.queueId = submit.QueueId;
+        event.label = submit.AutoSubmitted ? "DirectStorage auto submit" : "DirectStorage submit";
+        m_state.Push( std::move( event ) );
+        return S_OK;
+    }
+
+private:
+    AgentState& m_state;
+};
+
+class ResourceCallbacks final : public NoOpApiObjectCallbacks
+{
+public:
+    explicit ResourceCallbacks( AgentState& state ) : m_state( state ) {}
+
+    HRESULT OnCommittedResourceCreation( INT64 timestamp, UINT64 deviceId, UINT32 processId, UINT32 threadId,
+        const D3D12_RESOURCE_DESC* desc, const ObjectPlacementInfo* placement,
+        const D3D12_HEAP_PROPERTIES* heapProperties, D3D12_HEAP_FLAGS heapFlags, UINT64* objectId ) override
+    {
+        const auto status = NoOpApiObjectCallbacks::OnCommittedResourceCreation( timestamp, deviceId, processId,
+            threadId, desc, placement, heapProperties, heapFlags, objectId );
+        Record( timestamp, deviceId, processId, threadId, *objectId, "Committed resource" );
+        return status;
+    }
+
+    HRESULT OnPlacedResourceCreation( INT64 timestamp, UINT64 deviceId, UINT32 processId, UINT32 threadId,
+        const D3D12_RESOURCE_DESC* desc, const ObjectPlacementInfo* placement, UINT64* objectId ) override
+    {
+        const auto status = NoOpApiObjectCallbacks::OnPlacedResourceCreation( timestamp, deviceId, processId,
+            threadId, desc, placement, objectId );
+        Record( timestamp, deviceId, processId, threadId, *objectId, "Placed resource" );
+        return status;
+    }
+
+    HRESULT OnReservedResourceCreation( INT64 timestamp, UINT64 deviceId, UINT32 processId, UINT32 threadId,
+        const D3D12_RESOURCE_DESC* desc, const ReservedResourceInfo* reserved, UINT64* objectId ) override
+    {
+        const auto status = NoOpApiObjectCallbacks::OnReservedResourceCreation( timestamp, deviceId, processId,
+            threadId, desc, reserved, objectId );
+        Record( timestamp, deviceId, processId, threadId, *objectId, "Reserved resource" );
+        return status;
+    }
+
+    HRESULT OnObjectDestruction( INT64 timestamp, ApiObjectType type, UINT64 objectId ) override
+    {
+        if( type != ApiObjectType::Resource || timestamp < 0 ) return S_OK;
+        tracyx::Event event;
+        event.kind = tracyx::EventKind::ResourceDestroy;
+        event.rawTimestamp = static_cast<uint64_t>( timestamp );
+        event.process = m_state.session.manifest.process;
+        event.resourceId = objectId;
+        event.label = "Resource destroy";
+        m_state.Push( std::move( event ) );
+        return S_OK;
+    }
+
+private:
+    void Record( INT64 timestamp, UINT64 deviceId, UINT32 processId, UINT32 threadId,
+        UINT64 objectId, const char* label )
+    {
+        if( timestamp < 0 || processId != m_state.session.manifest.process.processId ) return;
+        tracyx::Event event;
+        event.kind = tracyx::EventKind::ResourceCreate;
+        event.rawTimestamp = static_cast<uint64_t>( timestamp );
+        event.process = m_state.session.manifest.process;
+        event.threadId = threadId;
+        event.deviceId = deviceId;
+        event.resourceId = objectId;
+        event.label = label;
+        m_state.Push( std::move( event ) );
+    }
+
+    AgentState& m_state;
+};
+
 class DiagnosticCallbacks final : public DiagnosticsSink
 {
 public:
@@ -316,6 +421,22 @@ void ReadAnchors( AgentState& state, const std::filesystem::path& file, size_t& 
         event.label = "FrameMark QPC anchor";
         state.Push( std::move( event ) );
     }
+}
+
+void ReadDred( AgentState& state, const std::filesystem::path& file )
+{
+    std::ifstream input( file, std::ios::binary );
+    uint64_t qpc = 0, reason = 0, address = 0, breadcrumbs = 0;
+    if( !( input >> qpc >> reason >> address >> breadcrumbs ) || reason > UINT32_MAX ) return;
+    tracyx::Event event;
+    event.source = tracyx::Source::Bridge;
+    event.kind = tracyx::EventKind::RuntimeError;
+    event.rawTimestamp = qpc;
+    event.process = state.session.manifest.process;
+    event.resourceId = address;
+    event.label = "DRED device removed HRESULT " + std::to_string( reason ) +
+        ", breadcrumb nodes " + std::to_string( breadcrumbs );
+    state.Push( std::move( event ) );
 }
 
 void StreamBatches( AgentState& state )
@@ -438,6 +559,8 @@ int wmain( int argc, wchar_t** argv )
     GpuCallbacks gpu( state );
     PsoCallbacks pso( state );
     EngineActivityCallbacks engineActivity( state );
+    StorageCallbacks storage( state );
+    ResourceCallbacks resources( state );
     NoOpDxgkObjectCallbacks dxgk;
     DiagnosticCallbacks diagnostics( state );
     DxTimingCaptureEventCallbacks callbacks{};
@@ -445,6 +568,8 @@ int wmain( int argc, wchar_t** argv )
     callbacks.DxgkObjectCallbacks = &dxgk;
     callbacks.PipelineStateEventCallbacks = &pso;
     callbacks.GpuEngineActivityCallbacks = &engineActivity;
+    callbacks.DirectStorageCallbacks = &storage;
+    callbacks.ApiObjectCallbacks = &resources;
     callbacks.DiagnosticsSink = &diagnostics;
     DxTimingCaptureLibraryOptions options{};
     options.TrackGpuTiming = true;
@@ -481,6 +606,9 @@ int wmain( int argc, wchar_t** argv )
         ControlTraceW( session, name.c_str(), &properties.properties, EVENT_TRACE_CONTROL_STOP );
         return 1;
     }
+    const auto storageStatus = EnableProvider( session, DirectStorage::DStorageEtwProvider, ~0ULL, TRACE_LEVEL_VERBOSE );
+    if( storageStatus != ERROR_SUCCESS )
+        std::fprintf( stderr, "DirectStorage ETW unavailable (Win32 %lu).\n", storageStatus );
 
     std::thread stream( [&]() { StreamBatches( state ); } );
     std::thread bridge( [&]() {
@@ -595,6 +723,7 @@ int wmain( int argc, wchar_t** argv )
     presentMon.join();
 #endif
     ReadAnchors( state, anchorFile, nextAnchor );
+    ReadDred( state, sessionDirectory / "dred.txt" );
     CancelSynchronousIo( stream.native_handle() );
     stream.join();
     state.session.manifest.lostEvents = state.lostEvents.load();
