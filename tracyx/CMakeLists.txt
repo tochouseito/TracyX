@@ -33,6 +33,8 @@ if(WIN32 AND TRACYX_BUILD_PROBES)
 
     add_executable(TracyXProbeD3D12 probes/D3D12Probe.cpp)
     target_link_libraries(TracyXProbeD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
+    add_executable(TracyXProbePresentD3D12 probes/PresentD3D12Probe.cpp)
+    target_link_libraries(TracyXProbePresentD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
     set(TRACYX_WINPIX_ROOT "$ENV{USERPROFILE}/.nuget/packages/winpixeventruntime/1.0.240308001" CACHE PATH "Optional WinPixEventRuntime NuGet package")
     if(EXISTS "${TRACYX_WINPIX_ROOT}/Include/WinPixEventRuntime/pix3.h" AND
        EXISTS "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
@@ -86,4 +88,14 @@ if(WIN32 AND TRACYX_DX_TIMING_ROOT)
     )
     target_compile_definitions(TracyXAgent PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(TracyXAgent PRIVATE TracyXCore TracyXDxTiming advapi32 tdh d3d12 dxgi uuid onecore)
+    if(TRACYX_PRESENTMON_SDK_ROOT)
+        target_sources(TracyXAgent PRIVATE agent/PresentMonAdapter.cpp)
+        target_include_directories(TracyXAgent PRIVATE "${TRACYX_PRESENTMON_SDK_ROOT}")
+        target_link_libraries(TracyXAgent PRIVATE "${TRACYX_PRESENTMON_SDK_ROOT}/PresentMonAPI2Loader.lib")
+        target_compile_definitions(TracyXAgent PRIVATE TRACYX_HAS_PRESENTMON)
+        add_custom_command(TARGET TracyXAgent POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${TRACYX_PRESENTMON_SDK_ROOT}/PresentMonAPI2Loader.dll"
+                "$<TARGET_FILE_DIR:TracyXAgent>/PresentMonAPI2Loader.dll")
+    endif()
 endif()

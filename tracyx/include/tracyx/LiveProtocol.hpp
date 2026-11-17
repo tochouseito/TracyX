@@ -11,7 +11,7 @@ namespace tracyx
 {
 
 inline constexpr uint32_t LiveMagic = 0x58594354; // TCYX
-inline constexpr uint32_t LiveVersion = 3;
+inline constexpr uint32_t LiveVersion = 4;
 inline constexpr size_t LiveBatchCapacity = 128;
 
 struct WireEvent
@@ -27,6 +27,10 @@ struct WireEvent
     uint64_t queueId = 0;
     uint64_t commandListId = 0;
     uint64_t resourceId = 0;
+    uint64_t swapChainId = 0;
+    uint64_t displayIntervalNs = 0;
+    uint64_t gpuBusyNs = 0;
+    uint64_t displayLatencyNs = 0;
     uint64_t frameId = 0;
     uint64_t frameSeriesId = 0;
     uint32_t processId = 0;
@@ -35,6 +39,7 @@ struct WireEvent
     uint8_t kind = 0;
     uint8_t clock = 0;
     uint8_t flags = 0;
+    uint8_t displayStatus = 0;
     char label[96]{};
 };
 
@@ -54,9 +59,12 @@ struct WireBatch
     uint64_t dxgkEvents = 0;
     uint64_t d3d12DecodeErrors = 0;
     uint64_t dxgkDecodeErrors = 0;
+    uint64_t presentMonFrames = 0;
+    uint64_t presentMonDropped = 0;
     uint64_t backlog = 0;
     uint32_t processId = 0;
-    uint32_t reserved2 = 0;
+    uint32_t presentMonState = 0;
+    char presentMonError[96]{};
     WireEvent events[LiveBatchCapacity]{};
 };
 
@@ -78,11 +86,18 @@ inline WireEvent ToWire( const Event& event )
     wire.queueId = event.queueId;
     wire.commandListId = event.commandListId;
     wire.resourceId = event.resourceId;
+    wire.swapChainId = event.swapChainId;
+    wire.displayIntervalNs = event.displayIntervalNs.value_or( 0 );
+    wire.gpuBusyNs = event.gpuBusyNs.value_or( 0 );
+    wire.displayLatencyNs = event.displayLatencyNs.value_or( 0 );
+    wire.displayStatus = static_cast<uint8_t>( event.displayStatus );
     wire.source = static_cast<uint8_t>( event.source );
     wire.kind = static_cast<uint8_t>( event.kind );
     wire.clock = static_cast<uint8_t>( event.clock );
     wire.flags = static_cast<uint8_t>( ( event.rawEndTimestamp ? 1 : 0 ) |
-        ( event.normalizedNs ? 2 : 0 ) | ( event.normalizedEndNs ? 4 : 0 ) );
+        ( event.normalizedNs ? 2 : 0 ) | ( event.normalizedEndNs ? 4 : 0 ) |
+        ( event.displayIntervalNs ? 32 : 0 ) | ( event.gpuBusyNs ? 64 : 0 ) |
+        ( event.displayLatencyNs ? 128 : 0 ) );
     if( !event.frameLinks.empty() )
     {
         wire.frameId = event.frameLinks.front().frameId;
@@ -108,6 +123,11 @@ inline Event FromWire( const WireEvent& wire )
     event.queueId = wire.queueId;
     event.commandListId = wire.commandListId;
     event.resourceId = wire.resourceId;
+    event.swapChainId = wire.swapChainId;
+    event.displayStatus = static_cast<DisplayStatus>( wire.displayStatus );
+    if( wire.flags & 32 ) event.displayIntervalNs = wire.displayIntervalNs;
+    if( wire.flags & 64 ) event.gpuBusyNs = wire.gpuBusyNs;
+    if( wire.flags & 128 ) event.displayLatencyNs = wire.displayLatencyNs;
     event.source = static_cast<Source>( wire.source );
     event.kind = static_cast<EventKind>( wire.kind );
     event.clock = static_cast<ClockDomain>( wire.clock );

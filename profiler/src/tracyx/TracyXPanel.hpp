@@ -57,6 +57,9 @@ private:
     uint64_t m_seriesId = 0;
     size_t m_anchorCount = 0;
     size_t m_unaligned = 0;
+    size_t m_processMismatch = 0;
+    size_t m_unconvertibleClock = 0;
+    size_t m_outsideAnchors = 0;
     bool m_loaded = false;
     bool m_autoLoadChecked = false;
     bool m_livePositioned = false;

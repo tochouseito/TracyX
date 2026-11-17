@@ -114,6 +114,17 @@ bool ReadString( std::string_view line, std::string_view key, std::string& value
     return false;
 }
 
+bool ReadOptionalNumber( std::string_view line, std::string_view flagKey,
+    std::string_view valueKey, std::optional<uint64_t>& value )
+{
+    if( !Field( line, flagKey ) && !Field( line, valueKey ) ) return true;
+    uint64_t hasValue = 0, parsed = 0;
+    if( !ReadNumber( line, flagKey, hasValue ) || hasValue > 1 ||
+        !ReadNumber( line, valueKey, parsed ) ) return false;
+    if( hasValue ) value = parsed;
+    return true;
+}
+
 std::string EncodeLinks( const std::vector<FrameLink>& links )
 {
     std::string text;
@@ -186,6 +197,15 @@ bool ReadEvent( std::string_view line, Event& event )
 
     std::string links;
     if( !ReadString( line, "frame_links", links ) || !DecodeLinks( links, event.frameLinks ) ) return false;
+    uint64_t displayStatus = 0;
+    if( Field( line, "swap_chain_id" ) && !ReadNumber( line, "swap_chain_id", event.swapChainId ) ) return false;
+    if( Field( line, "display_status" ) &&
+        ( !ReadNumber( line, "display_status", displayStatus ) ||
+          displayStatus > static_cast<uint64_t>( DisplayStatus::Dropped ) ) ) return false;
+    if( !ReadOptionalNumber( line, "has_display_interval", "display_interval_ns", event.displayIntervalNs ) ||
+        !ReadOptionalNumber( line, "has_gpu_busy", "gpu_busy_ns", event.gpuBusyNs ) ||
+        !ReadOptionalNumber( line, "has_display_latency", "display_latency_ns", event.displayLatencyNs ) ) return false;
+    event.displayStatus = static_cast<DisplayStatus>( displayStatus );
     event.source = static_cast<Source>( source );
     event.kind = static_cast<EventKind>( kind );
     event.clock = static_cast<ClockDomain>( clock );
@@ -230,6 +250,10 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
         << ",\"d3d12_decode_errors\":" << session.manifest.d3d12DecodeErrors
         << ",\"dxgk_decode_errors\":" << session.manifest.dxgkDecodeErrors
         << ",\"clock_residual_ns\":" << session.manifest.clockResidualNs
+        << ",\"present_mon_state\":" << session.manifest.presentMonState
+        << ",\"present_mon_frames\":" << session.manifest.presentMonFrames
+        << ",\"present_mon_dropped\":" << session.manifest.presentMonDropped
+        << ",\"present_mon_error\":" << EscapeJson( session.manifest.presentMonError )
         << ",\"event_count\":" << session.events.size()
         << ",\"tracy_file\":" << EscapeJson( session.manifest.tracyFile ) << "}\n";
 
@@ -254,8 +278,17 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
             << ",\"device_id\":" << event.deviceId
             << ",\"queue_id\":" << event.queueId
             << ",\"command_list_id\":" << event.commandListId
-            << ",\"resource_id\":" << event.resourceId
-            << ",\"label\":" << EscapeJson( event.label )
+            << ",\"resource_id\":" << event.resourceId;
+        if( event.source == Source::PresentMon )
+            events << ",\"swap_chain_id\":" << event.swapChainId
+                << ",\"display_status\":" << static_cast<unsigned>( event.displayStatus )
+                << ",\"has_display_interval\":" << ( event.displayIntervalNs ? 1 : 0 )
+                << ",\"display_interval_ns\":" << event.displayIntervalNs.value_or( 0 )
+                << ",\"has_gpu_busy\":" << ( event.gpuBusyNs ? 1 : 0 )
+                << ",\"gpu_busy_ns\":" << event.gpuBusyNs.value_or( 0 )
+                << ",\"has_display_latency\":" << ( event.displayLatencyNs ? 1 : 0 )
+                << ",\"display_latency_ns\":" << event.displayLatencyNs.value_or( 0 );
+        events << ",\"label\":" << EscapeJson( event.label )
             << ",\"frame_links\":" << EscapeJson( EncodeLinks( event.frameLinks ) ) << "}\n";
     }
     manifest.close();
@@ -295,6 +328,20 @@ bool LoadSession( const std::filesystem::path& directory, Session& session, std:
     ReadNumber( line, "dxgk_events", loaded.manifest.dxgkEvents );
     ReadNumber( line, "d3d12_decode_errors", loaded.manifest.d3d12DecodeErrors );
     ReadNumber( line, "dxgk_decode_errors", loaded.manifest.dxgkDecodeErrors );
+    uint64_t presentMonState = 0;
+    if( Field( line, "present_mon_state" ) &&
+        ( !ReadNumber( line, "present_mon_state", presentMonState ) || presentMonState > 2 ) )
+    {
+        error = "Invalid PresentMon state";
+        return false;
+    }
+    loaded.manifest.presentMonState = static_cast<uint32_t>( presentMonState );
+    if( Field( line, "present_mon_frames" ) &&
+        !ReadNumber( line, "present_mon_frames", loaded.manifest.presentMonFrames ) ) return false;
+    if( Field( line, "present_mon_dropped" ) &&
+        !ReadNumber( line, "present_mon_dropped", loaded.manifest.presentMonDropped ) ) return false;
+    if( Field( line, "present_mon_error" ) &&
+        !ReadString( line, "present_mon_error", loaded.manifest.presentMonError ) ) return false;
     if( !loaded.manifest.tracyFile.empty() &&
         ( std::filesystem::path( loaded.manifest.tracyFile ).is_absolute() ||
           loaded.manifest.tracyFile.find( ".." ) != std::string::npos ||

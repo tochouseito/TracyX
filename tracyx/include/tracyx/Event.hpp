@@ -44,6 +44,13 @@ enum class LinkStrength : uint8_t
     TimeOverlap
 };
 
+enum class DisplayStatus : uint8_t
+{
+    Unknown,
+    Displayed,
+    Dropped
+};
+
 struct ProcessIdentity
 {
     uint32_t processId = 0;
@@ -76,6 +83,11 @@ struct Event
     uint64_t queueId = 0;
     uint64_t commandListId = 0;
     uint64_t resourceId = 0;
+    uint64_t swapChainId = 0;
+    DisplayStatus displayStatus = DisplayStatus::Unknown;
+    std::optional<uint64_t> displayIntervalNs;
+    std::optional<uint64_t> gpuBusyNs;
+    std::optional<uint64_t> displayLatencyNs;
     std::string label;
     std::vector<FrameLink> frameLinks;
 };
