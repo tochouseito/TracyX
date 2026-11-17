@@ -103,15 +103,28 @@ void Panel::StartLive( uint32_t pid )
     m_liveRunning.store( true );
     m_liveThread = std::thread( [this, pid]() {
         const auto name = std::wstring( L"\\\\.\\pipe\\TracyX." ) + std::to_wstring( pid );
+        const auto recordError = [this]( std::string message ) {
+            std::lock_guard lock( m_liveMutex );
+            m_liveError = std::move( message );
+        };
         while( m_liveRunning.load() )
         {
             if( !WaitNamedPipeW( name.c_str(), 500 ) )
             {
+                const auto error = GetLastError();
+                if( error == ERROR_ACCESS_DENIED ) recordError( "Live Agent pipe access denied; use the target's logon session" );
+                else recordError( "Live Agent pipe unavailable (Win32 " + std::to_string( error ) + ")" );
                 std::this_thread::sleep_for( std::chrono::milliseconds( 250 ) );
                 continue;
             }
             const auto pipe = CreateFileW( name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr );
-            if( pipe == INVALID_HANDLE_VALUE ) continue;
+            if( pipe == INVALID_HANDLE_VALUE )
+            {
+                const auto error = GetLastError();
+                if( error == ERROR_ACCESS_DENIED ) recordError( "Live Agent pipe access denied; use the target's logon session" );
+                else recordError( "Cannot connect to Live Agent pipe (Win32 " + std::to_string( error ) + ")" );
+                continue;
+            }
             while( m_liveRunning.load() )
             {
                 tracyx::WireBatch batch;
@@ -123,10 +136,15 @@ void Panel::StartLive( uint32_t pid )
                     if( !ReadFile( pipe, bytes + total, static_cast<DWORD>( sizeof( batch ) - total ), &read, nullptr ) || read == 0 ) break;
                     total += read;
                 }
-                if( total != sizeof( batch ) || batch.magic != tracyx::LiveMagic ||
-                    batch.version != tracyx::LiveVersion || batch.count > tracyx::LiveBatchCapacity || batch.processId != pid ) break;
+                if( total != sizeof( batch ) ) break;
+                if( !tracyx::ValidWireBatch( batch, pid ) )
+                {
+                    recordError( "Live Agent sent an invalid or incompatible batch" );
+                    break;
+                }
                 m_liveDisconnected.store( false );
                 std::lock_guard lock( m_liveMutex );
+                m_liveError.clear();
                 if( m_liveQueue.size() >= 64 ) { m_viewerDrops += batch.count; continue; }
                 m_liveQueue.push_back( std::move( batch ) );
             }
@@ -142,9 +160,11 @@ void Panel::StartLive( uint32_t pid )
 void Panel::PollLive( Worker& worker, const FrameData* frames )
 {
     std::deque<tracyx::WireBatch> pending;
+    std::string liveError;
     {
         std::lock_guard lock( m_liveMutex );
         pending.swap( m_liveQueue );
+        liveError = m_liveError;
     }
     for( const auto& batch : pending )
     {
@@ -189,7 +209,9 @@ void Panel::PollLive( Worker& worker, const FrameData* frames )
         m_lastAlignment = now;
     }
     else if( !pending.empty() && m_anchorCount < 2 ) m_status = "Live Agent connected; waiting for FrameMark anchors";
-    if( pending.empty() && m_liveDisconnected.load() && m_loaded ) m_status = "Live Agent disconnected; saved session may be available";
+    if( !liveError.empty() ) m_status = liveError;
+    else if( pending.empty() && m_liveDisconnected.load() && m_loaded )
+        m_status = "Live Agent disconnected; saved session may be available";
 }
 
 void Panel::Load( const std::filesystem::path& directory )

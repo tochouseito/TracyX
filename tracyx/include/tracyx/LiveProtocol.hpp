@@ -70,6 +70,29 @@ struct WireBatch
 
 static_assert( std::is_standard_layout_v<WireBatch> );
 
+inline bool ValidWireBatch( const WireBatch& batch, uint32_t expectedPid )
+{
+    if( batch.magic != LiveMagic || batch.version != LiveVersion ||
+        batch.count > LiveBatchCapacity || batch.processId != expectedPid ||
+        batch.processStart100ns == 0 || batch.qpcFrequency == 0 || batch.presentMonState > 2 ||
+        std::memchr( batch.presentMonError, '\0', sizeof( batch.presentMonError ) ) == nullptr ) return false;
+    uint64_t previousId = 0;
+    for( uint32_t index = 0; index < batch.count; ++index )
+    {
+        const auto& event = batch.events[index];
+        if( event.eventId == 0 || event.eventId <= previousId ||
+            event.processId != batch.processId || event.processStart100ns != batch.processStart100ns ||
+            event.source > static_cast<uint8_t>( Source::Pix ) ||
+            event.kind > static_cast<uint8_t>( EventKind::ResourceDestroy ) ||
+            event.clock > static_cast<uint8_t>( ClockDomain::PresentMon ) ||
+            event.displayStatus > static_cast<uint8_t>( DisplayStatus::Dropped ) ||
+            ( event.flags & 24 ) == 24 ||
+            std::memchr( event.label, '\0', sizeof( event.label ) ) == nullptr ) return false;
+        previousId = event.eventId;
+    }
+    return true;
+}
+
 inline WireEvent ToWire( const Event& event )
 {
     WireEvent wire;

@@ -13,18 +13,23 @@ concurrency:
 
 jobs:
   release-build-windows:
+    if: ${{ !startsWith(github.event.release.tag_name, 'tracyx-v') }}
     uses: ./.github/workflows/windows.yml
 
   release-build-macos:
+    if: ${{ !startsWith(github.event.release.tag_name, 'tracyx-v') }}
     uses: ./.github/workflows/macos.yml
 
   release-build-manual:
+    if: ${{ !startsWith(github.event.release.tag_name, 'tracyx-v') }}
     uses: ./.github/workflows/latex.yml
 
   release-build-appimage:
+    if: ${{ !startsWith(github.event.release.tag_name, 'tracyx-v') }}
     uses: ./.github/workflows/appimage.yml
 
   release-build-linux-cli:
+    if: ${{ !startsWith(github.event.release.tag_name, 'tracyx-v') }}
     uses: ./.github/workflows/linux-cli.yml
 
   attach-to-release:

@@ -13,6 +13,7 @@
 #include <Windows.h>
 #include <evntrace.h>
 #include <evntcons.h>
+#include <sddl.h>
 
 #include <atomic>
 #include <algorithm>
@@ -28,6 +29,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 using namespace DirectX::Etw;
 
@@ -60,7 +62,7 @@ struct AgentState
     size_t maxEvents = 1'000'000;
     size_t firstEventIndex = 0;
     std::atomic<bool> running{ true };
-    std::atomic<uint64_t> nextEventId{ 1 };
+    uint64_t nextEventId = 1;
     std::atomic<uint64_t> lostEvents{ 0 };
     std::atomic<uint64_t> decodeErrors{ 0 };
     std::atomic<uint64_t> queueDrops{ 0 };
@@ -89,7 +91,6 @@ struct AgentState
 
     void Push( tracyx::Event event )
     {
-        event.eventId = nextEventId.fetch_add( 1 );
         if( event.source == tracyx::Source::DxEtw )
         {
             event.clock = tracyx::ClockDomain::DxTimingNs;
@@ -108,6 +109,7 @@ struct AgentState
                 if( const auto time = qpcClock.Normalize( *event.rawEndTimestamp ) ) event.normalizedEndNs = time->nanoseconds;
         }
         std::lock_guard lock( eventMutex );
+        event.eventId = nextEventId++;
         if( session.events.size() >= maxEvents )
         {
             const auto retire = std::min( session.events.size(), std::max<size_t>( 1, maxEvents / 8 ) );
@@ -405,18 +407,45 @@ BOOL WINAPI OnConsoleSignal( DWORD signal )
     return TRUE;
 }
 
-uint64_t ProcessStartTime( uint32_t pid )
+uint64_t ProcessStartTime( HANDLE process )
 {
-    const auto process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid );
-    if( !process ) return 0;
     FILETIME created{}, exited{}, kernel{}, user{};
     const auto ok = GetProcessTimes( process, &created, &exited, &kernel, &user );
-    CloseHandle( process );
     if( !ok ) return 0;
     ULARGE_INTEGER time{};
     time.LowPart = created.dwLowDateTime;
     time.HighPart = created.dwHighDateTime;
     return time.QuadPart;
+}
+
+bool ProcessLogonSid( HANDLE process, std::wstring& sid, DWORD& sessionId )
+{
+    HANDLE token = nullptr;
+    if( !OpenProcessToken( process, TOKEN_QUERY, &token ) ) return false;
+    const auto closeToken = [&]() { CloseHandle( token ); };
+    DWORD size = 0;
+    GetTokenInformation( token, TokenGroups, nullptr, 0, &size );
+    if( size == 0 ) { closeToken(); return false; }
+    std::vector<uint8_t> storage( size );
+    if( !GetTokenInformation( token, TokenGroups, storage.data(), size, &size ) ||
+        !GetTokenInformation( token, TokenSessionId, &sessionId, sizeof( sessionId ), &size ) )
+    {
+        closeToken();
+        return false;
+    }
+    const auto* groups = reinterpret_cast<const TOKEN_GROUPS*>( storage.data() );
+    for( DWORD index = 0; index < groups->GroupCount; ++index )
+    {
+        if( ( groups->Groups[index].Attributes & SE_GROUP_LOGON_ID ) != SE_GROUP_LOGON_ID ) continue;
+        LPWSTR value = nullptr;
+        if( !ConvertSidToStringSidW( groups->Groups[index].Sid, &value ) ) break;
+        sid = value;
+        LocalFree( value );
+        closeToken();
+        return true;
+    }
+    closeToken();
+    return false;
 }
 
 ULONG EnableProvider( TRACEHANDLE session, const GUID& guid, ULONGLONG keywords, UCHAR level )
@@ -474,19 +503,27 @@ void ReadDred( AgentState& state, const std::filesystem::path& file )
     state.Push( std::move( event ) );
 }
 
-void StreamBatches( AgentState& state )
+void StreamBatches( AgentState& state, const std::wstring& logonSid )
 {
     const auto name = std::wstring( L"\\\\.\\pipe\\TracyX." ) +
         std::to_wstring( state.session.manifest.process.processId );
+    const auto sddl = L"D:P(A;;GA;;;" + logonSid + L")(A;;GA;;;SY)";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if( !ConvertStringSecurityDescriptorToSecurityDescriptorW( sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr ) )
+    {
+        std::fwprintf( stderr, L"Cannot secure live pipe (Win32 %lu).\n", GetLastError() );
+        return;
+    }
+    SECURITY_ATTRIBUTES security{ sizeof( SECURITY_ATTRIBUTES ), descriptor, FALSE };
     while( state.running.load() )
     {
         const auto pipe = CreateNamedPipeW( name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1, 64 * 1024, 64 * 1024, 0, nullptr );
+            1, 64 * 1024, 64 * 1024, 0, &security );
         if( pipe == INVALID_HANDLE_VALUE )
         {
             std::fwprintf( stderr, L"CreateNamedPipeW failed: %lu\n", GetLastError() );
-            return;
+            break;
         }
         const auto connected = ConnectNamedPipe( pipe, nullptr ) || GetLastError() == ERROR_PIPE_CONNECTED;
         if( !connected || !state.running.load() ) { CloseHandle( pipe ); continue; }
@@ -531,6 +568,7 @@ void StreamBatches( AgentState& state )
         DisconnectNamedPipe( pipe );
         CloseHandle( pipe );
     }
+    LocalFree( descriptor );
 }
 
 } // namespace
@@ -543,12 +581,35 @@ int wmain( int argc, wchar_t** argv )
         return 2;
     }
     wchar_t* end = nullptr;
+    if( argv[1][0] == L'\0' || !std::all_of( argv[1], argv[1] + std::wcslen( argv[1] ),
+        []( wchar_t digit ) { return digit >= L'0' && digit <= L'9'; } ) ) return 2;
     const auto pid = std::wcstoul( argv[1], &end, 10 );
     if( !end || *end != L'\0' || pid == 0 || pid > UINT32_MAX ) return 2;
-    const auto started = ProcessStartTime( static_cast<uint32_t>( pid ) );
+    const auto target = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, static_cast<DWORD>( pid ) );
+    if( !target )
+    {
+        std::fwprintf( stderr, L"Cannot open target PID %lu (Win32 %lu).\n", pid, GetLastError() );
+        return 2;
+    }
+    const auto closeHandle = []( HANDLE handle ) { CloseHandle( handle ); };
+    std::unique_ptr<void, decltype( closeHandle )> targetGuard( target, closeHandle );
+    const auto started = ProcessStartTime( target );
     if( started == 0 )
     {
         std::fwprintf( stderr, L"Cannot query target process start time.\n" );
+        return 2;
+    }
+    std::wstring targetLogonSid, agentLogonSid;
+    DWORD targetSession = 0, agentSession = 0;
+    if( !ProcessLogonSid( target, targetLogonSid, targetSession ) ||
+        !ProcessLogonSid( GetCurrentProcess(), agentLogonSid, agentSession ) )
+    {
+        std::fwprintf( stderr, L"Cannot query target or Agent logon identity (Win32 %lu).\n", GetLastError() );
+        return 2;
+    }
+    if( targetLogonSid != agentLogonSid || targetSession != agentSession )
+    {
+        std::fwprintf( stderr, L"Target must share the Agent's local logon session.\n" );
         return 2;
     }
     const auto instanceName = std::wstring( L"Global\\TracyX.Agent." ) + std::to_wstring( pid ) +
@@ -560,7 +621,6 @@ int wmain( int argc, wchar_t** argv )
         std::fwprintf( stderr, L"Cannot reserve Agent for PID %lu (Win32 %lu).\n", pid, instanceError );
         return 1;
     }
-    const auto closeHandle = []( HANDLE handle ) { CloseHandle( handle ); };
     std::unique_ptr<void, decltype( closeHandle )> instanceGuard( instance, closeHandle );
     if( instanceError == ERROR_ALREADY_EXISTS )
     {
@@ -573,6 +633,8 @@ int wmain( int argc, wchar_t** argv )
     if( argc == 4 )
     {
         wchar_t* limitEnd = nullptr;
+        if( argv[3][0] == L'\0' || !std::all_of( argv[3], argv[3] + std::wcslen( argv[3] ),
+            []( wchar_t digit ) { return digit >= L'0' && digit <= L'9'; } ) ) return 2;
         const auto parsed = std::wcstoull( argv[3], &limitEnd, 10 );
         if( !limitEnd || *limitEnd != L'\0' || parsed < 1 || parsed > 1'000'000 ) return 2;
         maxEvents = static_cast<size_t>( parsed );
@@ -651,7 +713,7 @@ int wmain( int argc, wchar_t** argv )
     if( storageStatus != ERROR_SUCCESS )
         std::fprintf( stderr, "DirectStorage ETW unavailable (Win32 %lu).\n", storageStatus );
 
-    std::thread stream( [&]() { StreamBatches( state ); } );
+    std::thread stream( [&]() { StreamBatches( state, targetLogonSid ); } );
     std::thread bridge( [&]() {
         while( state.running.load() )
         {
@@ -748,14 +810,11 @@ int wmain( int argc, wchar_t** argv )
         CloseTrace( handle );
     } );
 
-    const auto target = OpenProcess( SYNCHRONIZE, FALSE, static_cast<DWORD>( pid ) );
     std::wprintf( L"Tracing PID %lu with RAW QPC timestamps. Press Ctrl+C to stop.\n", pid );
     while( state.running.load() )
     {
-        if( target && WaitForSingleObject( target, 100 ) == WAIT_OBJECT_0 ) break;
-        if( !target ) std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+        if( WaitForSingleObject( target, 100 ) == WAIT_OBJECT_0 ) break;
     }
-    if( target ) CloseHandle( target );
     state.running.store( false );
     ControlTraceW( session, name.c_str(), &properties.properties, EVENT_TRACE_CONTROL_STOP );
     consumer.join();

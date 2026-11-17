@@ -6,14 +6,31 @@
 #include "tracyx/LiveProtocol.hpp"
 #include "tracyx/Session.hpp"
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
-int main()
+int main( int argc, char** argv )
 {
     using namespace tracyx;
+
+    if( argc == 2 )
+    {
+        Session captured;
+        std::string error;
+        if( !LoadSession( argv[1], captured, error ) || captured.events.empty() )
+        {
+            std::cerr << "Captured session invalid: " << error << '\n';
+            return 1;
+        }
+        std::cout << "Loaded " << captured.events.size() << " captured events\n";
+        return 0;
+    }
 
     QpcClock clock( 10'000'000, 1'000 );
     assert( !clock.Normalize( 999 ) );
@@ -187,6 +204,7 @@ int main()
     assert( SaveSession( directory, saved, error ) );
     Session loaded;
     assert( LoadSession( directory, loaded, error ) );
+    assert( loaded.manifest.eventsFile.starts_with( "events-" ) );
     assert( loaded.manifest.process == process );
     assert( loaded.events.size() == 5 );
     assert( loaded.manifest.presentMonFrames == 2 );
@@ -237,10 +255,28 @@ int main()
     assert( pixLinks[0].frameId == 42 && pixLinks[0].strength == LinkStrength::Explicit );
     assert( pixLinks[1].frameId == 43 && pixLinks[1].strength == LinkStrength::TimeOverlap );
     assert( FindPixCaptureFrames( pixLoaded[1], pixAnchors ).empty() );
-    std::ofstream( directory / "events.jsonl", std::ios::trunc ).close();
+    std::ofstream( directory / loaded.manifest.eventsFile, std::ios::trunc ).close();
     assert( !LoadSession( directory, loaded, error ) );
     assert( error == "Event count mismatch" );
     assert( SaveSession( directory, saved, error ) );
+    assert( LoadSession( directory, loaded, error ) );
+    const auto previousEventsFile = loaded.manifest.eventsFile;
+    assert( SaveSession( directory, saved, error ) );
+    assert( LoadSession( directory, loaded, error ) );
+    assert( loaded.manifest.eventsFile != previousEventsFile );
+#ifdef _WIN32
+    const auto publishedEventsFile = loaded.manifest.eventsFile;
+    {
+        std::ifstream heldManifest( directory / "session.json" );
+        assert( heldManifest );
+        assert( !SaveSession( directory, saved, error ) );
+        assert( error.starts_with( "Cannot publish session manifest" ) );
+    }
+    assert( LoadSession( directory, loaded, error ) );
+    assert( loaded.manifest.eventsFile == publishedEventsFile );
+#endif
+    std::ofstream( directory / previousEventsFile, std::ios::trunc ).close();
+    assert( LoadSession( directory, loaded, error ) );
     {
         std::ofstream manifest( directory / "session.json", std::ios::trunc );
         manifest << "{\"version\":1,\"process_id\":42,\"process_start_100ns\":300,"
@@ -250,6 +286,26 @@ int main()
     assert( !LoadSession( directory, loaded, error ) );
     assert( error == "Invalid or unsupported manifest" );
     assert( SaveSession( directory, saved, error ) );
+    assert( LoadSession( directory, loaded, error ) );
+    std::ifstream manifestInput( directory / "session.json" );
+    std::string manifestLine;
+    assert( static_cast<bool>( std::getline( manifestInput, manifestLine ) ) );
+    manifestInput.close();
+    const auto eventsField = manifestLine.find( ",\"events_file\":" );
+    const auto tracyField = manifestLine.find( ",\"tracy_file\":", eventsField );
+    assert( eventsField != std::string::npos && tracyField != std::string::npos );
+    auto invalidPath = manifestLine;
+    invalidPath.replace( eventsField, tracyField - eventsField, ",\"events_file\":\"../outside.jsonl\"" );
+    { std::ofstream output( directory / "session.json", std::ios::trunc ); output << invalidPath << '\n'; }
+    assert( !LoadSession( directory, loaded, error ) && error == "Event file is outside the session" );
+    std::filesystem::copy_file( directory / loaded.manifest.eventsFile, directory / "events.jsonl",
+        std::filesystem::copy_options::overwrite_existing );
+    auto legacy = manifestLine;
+    legacy.erase( eventsField, tracyField - eventsField );
+    { std::ofstream output( directory / "session.json", std::ios::trunc ); output << legacy << '\n'; }
+    assert( LoadSession( directory, loaded, error ) && loaded.manifest.eventsFile == "events.jsonl" );
+    assert( SaveSession( directory, saved, error ) );
+    assert( LoadSession( directory, loaded, error ) );
     const auto wire = ToWire( loaded.events[0] );
     const auto restored = FromWire( wire );
     assert( restored.label == loaded.events[0].label );
@@ -260,6 +316,22 @@ int main()
     assert( presentWire.displayStatus == DisplayStatus::Displayed );
     assert( presentWire.gpuBusyNs == 0 );
     assert( !FromWire( ToWire( loaded.events[2] ) ).displayLatencyNs );
+    WireBatch batch;
+    batch.qpcFrequency = 10'000'000;
+    batch.processId = process.processId;
+    batch.processStart100ns = process.startTime100ns;
+    batch.count = 1;
+    batch.events[0] = ToWire( loaded.events[0] );
+    batch.events[0].eventId = 1;
+    assert( ValidWireBatch( batch, process.processId ) );
+    batch.events[0].processStart100ns++;
+    assert( !ValidWireBatch( batch, process.processId ) );
+    batch.events[0].processStart100ns--;
+    batch.events[0].kind = 255;
+    assert( !ValidWireBatch( batch, process.processId ) );
+    batch.events[0].kind = static_cast<uint8_t>( loaded.events[0].kind );
+    batch.count = LiveBatchCapacity + 1;
+    assert( !ValidWireBatch( batch, process.processId ) );
 
     {
         FrameBridge bridge( directory / "frame-anchors.jsonl" );
@@ -275,13 +347,13 @@ int main()
     assert( anchors.back().frameId == 1 );
     assert( anchors.back().seriesId == 7 );
 
-    std::ofstream broken( directory / "events.jsonl", std::ios::app );
+    std::ofstream broken( directory / loaded.manifest.eventsFile, std::ios::app );
     broken << "{\"version\":9}\n";
     broken.close();
     assert( !LoadSession( directory, loaded, error ) );
     assert( error == "Invalid event at line 6" );
     std::filesystem::remove( directory / "capture.tracy" );
-    std::ofstream( directory / "events.jsonl", std::ios::trunc );
+    std::ofstream( directory / loaded.manifest.eventsFile, std::ios::trunc );
     assert( !LoadSession( directory, loaded, error ) );
     assert( error == "Referenced Tracy capture is missing or outside the session" );
     std::filesystem::remove_all( directory );

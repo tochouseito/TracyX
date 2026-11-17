@@ -1,4 +1,4 @@
-# TracyX 統合プロファイラ（M0 / M1 実装）
+# TracyX 統合プロファイラ
 
 Tracy の Client–Viewer 通信と `.tracy` 形式は変更しない。TracyX は別プロセスで DX ETW を収集し、QPC を介して FrameMark と対応させる。Viewer は `session.json` と `events.jsonl` を `.tracy` の隣から読み取り、DX イベントを追加の時間レーンに表示する。
 
@@ -54,7 +54,7 @@ Agent の ETW Timestamp は `PROCESS_TRACE_MODE_RAW_TIMESTAMP` と QPC ベース
 
 - `tracy.tracy`: 純正 Tracy 記録。外部イベントを混入しない。
 - `session.json`: 形式版 `1`、PID とプロセス開始時刻、QPC 周波数・原点、ETW buffer loss、D3D12／DXGK の受信件数とデコード失敗、Queue drop、Bridge 欠番、イベント件数、参照する Tracy ファイル。
-- `events.jsonl`: イベントごとの版、Source、Clock domain、原時刻、相対時刻、誤差、Process／Thread／Device／Queue／CommandList／Resource ID、Frame Link、Label。
+- `events-*.jsonl`: イベントごとの版、Source、Clock domain、原時刻、相対時刻、誤差、Process／Thread／Device／Queue／CommandList／Resource ID、Frame Link、Label。`session.json` の `events_file` が参照する。従来の `events.jsonl` も読み込める。
 - PresentMon イベントは Swap Chain ID、表示結果、表示間隔・GPU Busy・Display Latency を追加する。時間値はミリ秒から整数ナノ秒に変換し、欠損値は 0 と区別する。表示されるフレームには Present から Display までの区間も記録する。古い形式版 `1` のセッションは新しい項目なしで読み込める。
 - `frame-anchors.jsonl`: Probe が FrameMark 前後の QPC、系列 ID、連番を書いた Bridge 入力。複数系列は Viewer の Frame series メニューで切り替える。
 - `pix-captures.jsonl`: PIX Capture の種類、開始 Frame ID、開始／終了 QPC、HRESULT、保存ファイル、失敗理由。`.wpix` 本体は同じセッション内に置くか、Viewer の「Existing .wpix」から既存ファイルを明示的に関連付ける。Viewer の「Open in PIX」は Windows の `.wpix` 関連付けを使用する。

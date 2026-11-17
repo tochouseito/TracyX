@@ -1,0 +1,126 @@
+name: TracyX Windows package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version without prefix
+        required: true
+        default: '1.0.0'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-package:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'tracyx-v') }}
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build pinned DxTimingCaptureLibrary
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'DxTimingCaptureLibrary'
+          git clone https://github.com/microsoft/DxTimingCaptureLibrary.git $root
+          git -C $root checkout 72bd2b18553493aa9850e434caf71bfa18952aac
+          msbuild (Join-Path $root 'DxTimingCaptureLibrary.sln') /restore /p:Configuration=Release /p:Platform=x64 /m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $library = Join-Path $root 'x64/Release/lib/DxTimingCaptureLibrary.lib'
+          if (-not (Test-Path -LiteralPath $library)) { throw "DxTimingCaptureLibrary.lib was not found at $library" }
+          $target = Join-Path $root 'lib/x64/Release/lib'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item -LiteralPath $library -Destination $target
+          "TRACYX_DX_TIMING_ROOT=$root" >> $env:GITHUB_ENV
+      - name: Extract pinned PresentMon SDK
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP 'PresentMon-2.6.0.msi'
+          $root = Join-Path $env:RUNNER_TEMP 'PresentMonSDK'
+          Invoke-WebRequest 'https://github.com/GameTechDev/PresentMon/releases/download/v2.6.0/PresentMon-2.6.0.msi' -OutFile $msi
+          $installer = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$root`"") -Wait -PassThru -WindowStyle Hidden
+          if ($installer.ExitCode -ne 0) { throw "PresentMon MSI extraction failed: $($installer.ExitCode)" }
+          $header = Get-ChildItem -LiteralPath $root -Recurse -Filter PresentMonAPI.h | Select-Object -First 1
+          if (-not $header) { throw 'PresentMon SDK was not found' }
+          $license = Join-Path $env:RUNNER_TEMP 'PresentMon-2.6.0-LICENSE.txt'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/GameTechDev/PresentMon/v2.6.0/LICENSE.txt' -OutFile $license
+          $sdk = $header.DirectoryName
+          foreach ($name in @('PresentMonAPI2Loader.lib', 'PresentMonAPI2Loader.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $sdk $name))) { throw "$name was not found in $sdk" }
+          }
+          "TRACYX_PRESENTMON_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
+          "TRACYX_PRESENTMON_LICENSE=$license" >> $env:GITHUB_ENV
+      - name: Extract pinned WinPixEventRuntime
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'WinPixEventRuntime.1.0.240308001'
+          $package = Join-Path $env:RUNNER_TEMP 'WinPixEventRuntime.1.0.240308001.zip'
+          Invoke-WebRequest 'https://www.nuget.org/api/v2/package/WinPixEventRuntime/1.0.240308001' -OutFile $package
+          Expand-Archive -LiteralPath $package -DestinationPath $root
+          if (-not (Test-Path -LiteralPath (Join-Path $root 'Include/WinPixEventRuntime/pix3.h'))) { throw 'WinPixEventRuntime headers were not found' }
+          "TRACYX_WINPIX_ROOT=$root" >> $env:GITHUB_ENV
+      - name: Build Release binaries
+        shell: pwsh
+        run: |
+          cmake -S tracyx -B build/tracyx-release -G 'Visual Studio 18 2026' -A x64 `
+            "-DTRACYX_DX_TIMING_ROOT=$env:TRACYX_DX_TIMING_ROOT" `
+            "-DTRACYX_PRESENTMON_SDK_ROOT=$env:TRACYX_PRESENTMON_SDK_ROOT" `
+            "-DTRACYX_WINPIX_ROOT=$env:TRACYX_WINPIX_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/tracyx-release --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/tracyx-release -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S capture -B build/capture-release -G 'Visual Studio 18 2026' -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/capture-release --config Release --target tracy-capture --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S profiler -B build/profiler-release -G 'Visual Studio 18 2026' -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/profiler-release --config Release --target tracy-profiler --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package Release and verify hashes
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $version = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_VERSION } else { $env:RELEASE_TAG.Substring(8) }
+          pwsh -NoProfile -File tracyx/scripts/package_windows.ps1 -Configuration Release -Version $version `
+            -AgentBuildDir build/tracyx-release -ViewerBuildDir build/profiler-release `
+            -CaptureBuildDir build/capture-release -DxTimingRoot $env:TRACYX_DX_TIMING_ROOT `
+            -VendorCache build/profiler-release/.cpm-cache -WinPixRoot $env:TRACYX_WINPIX_ROOT `
+            -PresentMonLicense $env:TRACYX_PRESENTMON_LICENSE -OutputDirectory build/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $folder = Join-Path 'build/dist' "TracyX-$version-win-x64"
+          foreach ($line in Get-Content (Join-Path $folder 'SHA256SUMS.txt')) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Invalid checksum line: $line" }
+            $file = Join-Path $folder $Matches[2]
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Matches[1]) { throw "Checksum failed: $file" }
+          }
+          "TRACYX_PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TracyX-windows-x64-release
+          path: build/dist/*.zip
+
+  attach-to-release:
+    if: ${{ github.event_name == 'release' && startsWith(github.event.release.tag_name, 'tracyx-v') }}
+    needs: windows-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TracyX-windows-x64-release
+          path: package
+      - name: Attach TracyX package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#tracyx-v}"
+          gh release upload "$TAG" "package/TracyX-$version-win-x64.zip" --clobber --repo "$GITHUB_REPOSITORY"
