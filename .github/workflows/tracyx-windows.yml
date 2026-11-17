@@ -6,11 +6,13 @@ on:
       - codex/m0-m1-integrated-profiler
       - codex/issue-12-presentmon-metrics
       - codex/issue-13-pix-capture
+      - codex/issue-14-coexistence
   pull_request:
     branches:
       - master
       - codex/m0-m1-integrated-profiler
       - codex/issue-12-presentmon-metrics
+      - codex/issue-13-pix-capture
   workflow_dispatch:
 
 permissions:

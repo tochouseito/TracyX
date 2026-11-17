@@ -407,6 +407,7 @@ bool AppendPixCapture( const std::filesystem::path& file, const PixCaptureRecord
     if( !output ) { error = "Cannot open PIX capture index"; return false; }
     output << "{\"version\":1,\"kind\":" << static_cast<unsigned>( capture.kind )
         << ",\"frame_id\":" << capture.frameId
+        << ",\"series_id\":" << capture.seriesId
         << ",\"qpc_begin\":" << capture.qpcBegin
         << ",\"qpc_end\":" << capture.qpcEnd
         << ",\"begin_result\":" << capture.beginResult
@@ -446,6 +447,11 @@ bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureR
             error = "Invalid PIX capture record at line " + std::to_string( lineNumber );
             return false;
         }
+        if( Field( line, "series_id" ) && !ReadNumber( line, "series_id", capture.seriesId ) )
+        {
+            error = "Invalid PIX capture series at line " + std::to_string( lineNumber );
+            return false;
+        }
         capture.kind = static_cast<PixCaptureKind>( kind );
         capture.beginResult = static_cast<uint32_t>( beginResult );
         capture.endResult = static_cast<uint32_t>( endResult );
@@ -456,6 +462,23 @@ bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureR
     if( input.bad() ) { error = "PIX capture index read failed"; return false; }
     captures = std::move( loaded );
     return true;
+}
+
+std::vector<FrameLink> FindPixCaptureFrames( const PixCaptureRecord& capture,
+    const std::vector<FrameAnchorRecord>& anchors )
+{
+    std::vector<FrameLink> links;
+    if( !capture.completed || capture.kind == PixCaptureKind::Existing ) return links;
+    for( const auto& anchor : anchors )
+    {
+        if( anchor.seriesId != capture.seriesId || anchor.frameId == 0 ) continue;
+        if( anchor.frameId == capture.frameId )
+            links.push_back( { anchor.frameId, LinkStrength::Explicit, anchor.seriesId } );
+        else if( capture.qpcBegin != 0 && capture.qpcEnd >= capture.qpcBegin &&
+            anchor.qpcBefore >= capture.qpcBegin && anchor.qpcBefore <= capture.qpcEnd )
+            links.push_back( { anchor.frameId, LinkStrength::TimeOverlap, anchor.seriesId } );
+    }
+    return links;
 }
 
 } // namespace tracyx

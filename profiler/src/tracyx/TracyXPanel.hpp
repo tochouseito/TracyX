@@ -42,6 +42,8 @@ private:
     void Align( Worker& worker, const FrameData* frames );
     void StartLive( uint32_t pid );
     void PollLive( Worker& worker, const FrameData* frames );
+    void RefreshPixLinks();
+    void OpenPixCapture( size_t index );
 
     tracyx::Session m_session;
     std::vector<AlignedEvent> m_aligned;
@@ -51,6 +53,7 @@ private:
     std::array<char, 1024> m_pixPath{};
     std::filesystem::path m_sessionDirectory;
     std::vector<tracyx::PixCaptureRecord> m_pixCaptures;
+    std::vector<std::vector<tracyx::FrameLink>> m_pixLinks;
     std::string m_traceFile;
     std::string m_status;
     size_t m_selected = 0;

@@ -70,9 +70,11 @@ int main( int argc, char** argv )
     const auto directory = std::filesystem::absolute( argc > 2 ? std::filesystem::path( argv[2] ) : std::filesystem::current_path() );
     std::filesystem::create_directories( directory );
     const std::string pixMode = argc > 3 ? argv[3] : "";
-    if( argc > 4 || ( !pixMode.empty() && pixMode != "gpu" && pixMode != "timing" ) )
+    const auto captureStartFrame = argc > 4 ? std::atoi( argv[4] ) : std::min( 10, frameCount );
+    if( argc > 5 || ( !pixMode.empty() && pixMode != "gpu" && pixMode != "timing" ) ||
+        ( argc > 4 && ( pixMode.empty() || captureStartFrame < 1 || captureStartFrame > frameCount ) ) )
     {
-        std::fprintf( stderr, "Usage: TracyXProbePresentD3D12 [frames] [directory] [gpu|timing]\n" );
+        std::fprintf( stderr, "Usage: TracyXProbePresentD3D12 [frames] [directory] [gpu|timing] [capture-start-frame]\n" );
         return 2;
     }
     tracyx::PixCaptureRecord pixCapture;
@@ -162,7 +164,7 @@ int main( int argc, char** argv )
         if( !bridge.Push( { static_cast<uint64_t>( frame ), static_cast<uint64_t>( before.QuadPart ),
             static_cast<uint64_t>( after.QuadPart ) } ) ) return 1;
 #ifdef TRACYX_HAS_PIX
-        const auto beginFrame = std::min( 10, frameCount );
+        const auto beginFrame = captureStartFrame;
         const auto endFrame = std::min( beginFrame + 10, frameCount );
         if( capturer && frame == beginFrame )
         {
