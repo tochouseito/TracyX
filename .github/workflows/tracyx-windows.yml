@@ -1,0 +1,74 @@
+name: TracyX Windows
+
+on:
+  push:
+    branches:
+      - codex/m0-m1-integrated-profiler
+      - codex/issue-12-presentmon-metrics
+  pull_request:
+    branches:
+      - master
+      - codex/m0-m1-integrated-profiler
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tracyx-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Core
+        run: cmake -S tracyx -B build/tracyx-core-ci -G "Visual Studio 18 2026" -A x64 -DTRACYX_BUILD_PROBES=OFF
+      - name: Build Core tests
+        run: cmake --build build/tracyx-core-ci --config Debug --target TracyXCoreTests --parallel 2
+      - name: Run Core tests
+        run: ctest --test-dir build/tracyx-core-ci -C Debug --output-on-failure
+
+  agent-and-viewer:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build pinned DxTimingCaptureLibrary
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'DxTimingCaptureLibrary'
+          git clone https://github.com/microsoft/DxTimingCaptureLibrary.git $root
+          git -C $root checkout 72bd2b18553493aa9850e434caf71bfa18952aac
+          msbuild (Join-Path $root 'DxTimingCaptureLibrary.sln') /restore /p:Configuration=Debug /p:Platform=x64 /m
+          "TRACYX_DX_TIMING_ROOT=$root" >> $env:GITHUB_ENV
+      - name: Extract pinned PresentMon SDK
+        if: ${{ hashFiles('tracyx/agent/PresentMonAdapter.cpp') != '' }}
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP 'PresentMon-2.6.0.msi'
+          $root = Join-Path $env:RUNNER_TEMP 'PresentMonSDK'
+          Invoke-WebRequest 'https://github.com/GameTechDev/PresentMon/releases/download/v2.6.0/PresentMon-2.6.0.msi' -OutFile $msi
+          & msiexec.exe /a $msi /qn "TARGETDIR=$root"
+          if ($LASTEXITCODE -ne 0) { throw "PresentMon MSI extraction failed: $LASTEXITCODE" }
+          $header = Get-ChildItem -LiteralPath $root -Recurse -Filter PresentMonAPI.h | Select-Object -First 1
+          if (-not $header) { throw 'PresentMonAPI.h was not found in the extracted MSI' }
+          $sdk = $header.DirectoryName
+          foreach ($name in @('PresentMonAPI2Loader.lib', 'PresentMonAPI2Loader.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $sdk $name))) { throw "$name was not found in $sdk" }
+          }
+          "TRACYX_PRESENTMON_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
+      - name: Configure Agent and probes
+        shell: pwsh
+        run: |
+          $args = @('-S', 'tracyx', '-B', 'build/tracyx-ci', '-G', 'Visual Studio 18 2026', '-A', 'x64', "-DTRACYX_DX_TIMING_ROOT=$env:TRACYX_DX_TIMING_ROOT")
+          if ($env:TRACYX_PRESENTMON_SDK_ROOT) { $args += "-DTRACYX_PRESENTMON_SDK_ROOT=$env:TRACYX_PRESENTMON_SDK_ROOT" }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Agent and probes
+        run: cmake --build build/tracyx-ci --config Debug --parallel 2
+      - name: Configure Viewer
+        run: cmake -S profiler -B build/profiler-ci -G "Visual Studio 18 2026" -A x64
+      - name: Build Viewer
+        run: cmake --build build/profiler-ci --config Debug --target tracy-profiler --parallel 2
