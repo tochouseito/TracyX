@@ -3,6 +3,8 @@
 #include "tracyx/DredBridge.hpp"
 
 #include <atomic>
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -63,12 +65,43 @@ void ExerciseMemory()
     std::printf( "Memory probe: heap outstanding 0, arena reset 0, failed allocations 1.\n" );
 }
 
+void MeasureMemoryAdapter()
+{
+    constexpr int operations = 20'000;
+    std::array<double, 3> baseline{};
+    std::array<double, 3> instrumented{};
+    for( size_t repeat = 0; repeat < baseline.size(); ++repeat )
+    {
+        const auto run = [&]( bool trace ) {
+            tracyx::TracyMemoryPool pool( "TracyX.Probe.Benchmark" );
+            const auto begin = std::chrono::steady_clock::now();
+            for( int i = 0; i < operations; ++i )
+            {
+                void* pointer = std::malloc( 64 );
+                if( !pointer ) std::abort();
+                if( trace && !pool.Alloc( pointer, 64 ) ) std::abort();
+                if( trace && !pool.Free( pointer ) ) std::abort();
+                std::free( pointer );
+            }
+            const auto end = std::chrono::steady_clock::now();
+            return std::chrono::duration<double, std::nano>( end - begin ).count() / operations;
+        };
+        baseline[repeat] = run( false );
+        instrumented[repeat] = run( true );
+    }
+    std::sort( baseline.begin(), baseline.end() );
+    std::sort( instrumented.begin(), instrumented.end() );
+    std::printf( "Memory adapter median: plain %.1f ns/op, traced %.1f ns/op (malloc+free pair).\n",
+        baseline[1], instrumented[1] );
+}
+
 } // namespace
 
 int main()
 {
     std::printf( "TracyX general C++ probe: PID, zones and named memory pools; no FrameMark.\n" );
     ExerciseMemory();
+    MeasureMemoryAdapter();
     for( int sample = 0; sample < 120; ++sample )
     {
         ZoneScopedN( "General C++ work" );

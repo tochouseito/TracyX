@@ -6,4 +6,6 @@
 
 予約量、使用量、空き量、断片化率、確保失敗数は allocator が知る値を `PublishMetrics` へ任意に渡して Tracy plot に表示する。これらは OS／GPU の値を自動推定しない。Tracy の Memory View に記録される割当と plot の値は異なる範囲を表し得るため、集計時に足し合わせない。
 
-`TracyXProbeCpp` の Debug 実行で 64→96 bytes の realloc、失敗時の旧割当保持、Arena の 80→0 bytes reset、4 スレッド×100 回の確保・解放を確認した。未解放 0、失敗 1 で終了した。Adapter を通さない `malloc`、第三者ライブラリ、カーネル／GPU の確保は追跡されない。Pool は pointer ごとの表と mutex を保持するため、計測対象の割当数に比例する追加メモリとロック負荷がある。モード別の定量負荷は Issue #19 で測定する。
+`TracyXProbeCpp` の Debug 実行で 64→96 bytes の realloc、失敗時の旧割当保持、Arena の 80→0 bytes reset、4 スレッド×100 回の確保・解放を確認した。未解放 0、失敗 1 で終了した。Adapter を通さない `malloc`、第三者ライブラリ、カーネル／GPU の確保は追跡されない。Pool は pointer ごとの表と mutex を保持するため、計測対象の割当数に比例する追加メモリとロック負荷がある。
+
+Debug の C++ Probe で 64 byte の `malloc+free` を 20,000 組×3 回、Probe 自体を 3 回実行して中央値を測った。素の処理は 140〜153 ns／組、Adapter の `Alloc+Free` を追加すると 1,437〜1,512 ns／組だった。1 組あたり約 1.3 µs の上乗せがある。この値は同一 PC、Tracy Viewer 未接続、Debug ビルドでの目安であり、接続中の記録負荷や実アプリの allocator 全体を代表しない。Light／System／Deep の全体負荷は Issue #19 の測定記録を参照。
