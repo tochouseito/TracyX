@@ -31,6 +31,7 @@ if(WIN32 AND TRACYX_BUILD_PROBES)
 
     add_executable(TracyXProbeCpp probes/CppProbe.cpp)
     target_link_libraries(TracyXProbeCpp PRIVATE TracyXProbeClient)
+    target_include_directories(TracyXProbeCpp PRIVATE include)
 
     add_executable(TracyXProbeD3D12 probes/D3D12Probe.cpp)
     target_link_libraries(TracyXProbeD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
