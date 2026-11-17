@@ -20,4 +20,6 @@ System／Deep は全回で対象と Agent が終了コード 0。Deep の GPU `.
 
 System、`max-events=1000` で 3600 Frame／約 61 秒を実行した。対象と Agent は終了コード 0、ETW loss・Bridge 欠番・D3D12／DXGK decode error は 0。イベントは通算 75,633 件になり、保存には最新の 883 件（event ID 74751–75633）が残り、退避 74,750 件を記録した。Agent ピーク working set は 40.48 MiB、CPU 7.20 s、保存量 0.70 MiB。対象の 1 Frame 経過時間は平均 17.01 ms だった。収集上限到達後も対象プロセスは最後まで動作した。
 
-保存先パスを既存ファイルにして C++ Probe を対象に故障注入した。対象は終了コード 0、Agent は `SaveSession failed: Cannot create a file when that file already exists.` を出して終了コード 1 だった。対象プロセスに失敗は伝播しなかった。長時間実行中の UI 再接続と Ctrl+C による手動停止は未検証。
+保存先パスを既存ファイルにして C++ Probe を対象に故障注入した。対象は終了コード 0、Agent は `SaveSession failed: Cannot create a file when that file already exists.` を出して終了コード 1 だった。対象プロセスに失敗は伝播しなかった。
+
+別の 3600 Frame Probe に Agent を接続し、対象が動作中に Agent のコンソールへ Ctrl+C を送った。Agent は `Saved 44052 events, 0 trace losses, 0 queue drops.` を出し、`session.json` と `events.jsonl` を保存した。対象はその後も 3600 Frame／7200 Present を完了し、Bridge drop 0。保存セッションは ETW loss／Agent drop／Bridge 欠番／D3D12・DXGK decode error 0 だった。この操作では Agent の停止と対象プロセスの独立性を確認した。長時間実行中の Viewer UI 再接続は未検証。900 Frame 実行中の named pipe 再接続は [M2 の検証](M2-coexistence-validation.md)に記録した。
