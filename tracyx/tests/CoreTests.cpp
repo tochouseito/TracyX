@@ -114,6 +114,7 @@ int main()
         {
             auto present = diagnosticEvent( 200 + frame, EventKind::Present, 0, 0, 0 );
             present.source = Source::PresentMon;
+            present.displayStatus = DisplayStatus::Displayed;
             present.displayIntervalNs = frame * 1'000'000;
             before.events.push_back( present );
             present.displayIntervalNs = frame * 2'000'000;

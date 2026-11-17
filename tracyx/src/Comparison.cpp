@@ -27,7 +27,8 @@ Samples Collect( const Session& session )
         if( event.process != session.manifest.process ) continue;
         if( event.kind == EventKind::FrameAnchor && event.normalizedNs && !event.frameLinks.empty() )
             anchors.emplace_back( event.frameLinks.front().seriesId, event.frameLinks.front().frameId, *event.normalizedNs );
-        else if( event.source == Source::PresentMon && event.kind == EventKind::Present && event.displayIntervalNs )
+        else if( event.source == Source::PresentMon && event.kind == EventKind::Present &&
+            event.displayStatus == DisplayStatus::Displayed && event.displayIntervalNs )
             samples.present.push_back( *event.displayIntervalNs );
         else if( event.kind == EventKind::GpuWork && event.commandListId != 0 &&
             event.normalizedNs && event.normalizedEndNs &&
