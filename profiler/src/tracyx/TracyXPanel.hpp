@@ -48,6 +48,9 @@ private:
     std::vector<uint64_t> m_frameIdByIndex;
     const FrameData* m_lastFrames = nullptr;
     std::array<char, 1024> m_path{};
+    std::array<char, 1024> m_pixPath{};
+    std::filesystem::path m_sessionDirectory;
+    std::vector<tracyx::PixCaptureRecord> m_pixCaptures;
     std::string m_traceFile;
     std::string m_status;
     size_t m_selected = 0;

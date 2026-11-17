@@ -395,4 +395,67 @@ bool LoadFrameAnchors( const std::filesystem::path& file, std::vector<FrameAncho
     return true;
 }
 
+bool AppendPixCapture( const std::filesystem::path& file, const PixCaptureRecord& capture, std::string& error )
+{
+    error.clear();
+    if( capture.fileName.empty() || capture.qpcEnd < capture.qpcBegin )
+    {
+        error = "Invalid PIX capture record";
+        return false;
+    }
+    std::ofstream output( file, std::ios::binary | std::ios::app );
+    if( !output ) { error = "Cannot open PIX capture index"; return false; }
+    output << "{\"version\":1,\"kind\":" << static_cast<unsigned>( capture.kind )
+        << ",\"frame_id\":" << capture.frameId
+        << ",\"qpc_begin\":" << capture.qpcBegin
+        << ",\"qpc_end\":" << capture.qpcEnd
+        << ",\"begin_result\":" << capture.beginResult
+        << ",\"end_result\":" << capture.endResult
+        << ",\"started\":" << ( capture.started ? 1 : 0 )
+        << ",\"completed\":" << ( capture.completed ? 1 : 0 )
+        << ",\"file_name\":" << EscapeJson( capture.fileName )
+        << ",\"error\":" << EscapeJson( capture.error ) << "}\n";
+    output.flush();
+    if( !output ) { error = "PIX capture index write failed"; return false; }
+    return true;
+}
+
+bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureRecord>& captures, std::string& error )
+{
+    error.clear();
+    std::ifstream input( file, std::ios::binary );
+    if( !input ) { error = "PIX capture index missing"; return false; }
+    std::vector<PixCaptureRecord> loaded;
+    std::string line;
+    for( size_t lineNumber = 1; std::getline( input, line ); ++lineNumber )
+    {
+        PixCaptureRecord capture;
+        uint64_t version = 0, kind = 0, beginResult = 0, endResult = 0, started = 0, completed = 0;
+        if( !ReadNumber( line, "version", version ) || version != 1 ||
+            !ReadNumber( line, "kind", kind ) || kind > static_cast<uint64_t>( PixCaptureKind::Existing ) ||
+            !ReadNumber( line, "frame_id", capture.frameId ) ||
+            !ReadNumber( line, "qpc_begin", capture.qpcBegin ) ||
+            !ReadNumber( line, "qpc_end", capture.qpcEnd ) || capture.qpcEnd < capture.qpcBegin ||
+            !ReadNumber( line, "begin_result", beginResult ) || beginResult > UINT32_MAX ||
+            !ReadNumber( line, "end_result", endResult ) || endResult > UINT32_MAX ||
+            !ReadNumber( line, "started", started ) || started > 1 ||
+            !ReadNumber( line, "completed", completed ) || completed > 1 ||
+            !ReadString( line, "file_name", capture.fileName ) || capture.fileName.empty() ||
+            !ReadString( line, "error", capture.error ) )
+        {
+            error = "Invalid PIX capture record at line " + std::to_string( lineNumber );
+            return false;
+        }
+        capture.kind = static_cast<PixCaptureKind>( kind );
+        capture.beginResult = static_cast<uint32_t>( beginResult );
+        capture.endResult = static_cast<uint32_t>( endResult );
+        capture.started = started != 0;
+        capture.completed = completed != 0;
+        loaded.push_back( std::move( capture ) );
+    }
+    if( input.bad() ) { error = "PIX capture index read failed"; return false; }
+    captures = std::move( loaded );
+    return true;
+}
+
 } // namespace tracyx

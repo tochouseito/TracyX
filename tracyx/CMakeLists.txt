@@ -34,17 +34,19 @@ if(WIN32 AND TRACYX_BUILD_PROBES)
     add_executable(TracyXProbeD3D12 probes/D3D12Probe.cpp)
     target_link_libraries(TracyXProbeD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
     add_executable(TracyXProbePresentD3D12 probes/PresentD3D12Probe.cpp)
-    target_link_libraries(TracyXProbePresentD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
+    target_link_libraries(TracyXProbePresentD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi advapi32)
     set(TRACYX_WINPIX_ROOT "$ENV{USERPROFILE}/.nuget/packages/winpixeventruntime/1.0.240308001" CACHE PATH "Optional WinPixEventRuntime NuGet package")
     if(EXISTS "${TRACYX_WINPIX_ROOT}/Include/WinPixEventRuntime/pix3.h" AND
        EXISTS "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
-        target_include_directories(TracyXProbeD3D12 PRIVATE "${TRACYX_WINPIX_ROOT}/Include")
-        target_link_libraries(TracyXProbeD3D12 PRIVATE "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
-        target_compile_definitions(TracyXProbeD3D12 PRIVATE TRACYX_HAS_PIX)
-        add_custom_command(TARGET TracyXProbeD3D12 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.dll"
-                "$<TARGET_FILE_DIR:TracyXProbeD3D12>/WinPixEventRuntime.dll")
+        foreach(probe TracyXProbeD3D12 TracyXProbePresentD3D12)
+            target_include_directories(${probe} PRIVATE "${TRACYX_WINPIX_ROOT}/Include")
+            target_link_libraries(${probe} PRIVATE "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
+            target_compile_definitions(${probe} PRIVATE TRACYX_HAS_PIX)
+            add_custom_command(TARGET ${probe} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.dll"
+                    "$<TARGET_FILE_DIR:${probe}>/WinPixEventRuntime.dll")
+        endforeach()
     endif()
 endif()
 

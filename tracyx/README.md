@@ -9,7 +9,8 @@ Tracy の Client–Viewer 通信と `.tracy` 形式は変更しない。TracyX �
 | Tracy upstream | `aa5240ca19dd4978784b76f769f067cdda647615`（v0.15.0） | Client、Capture、Viewer |
 | [DxTimingCaptureLibrary](https://github.com/microsoft/DxTimingCaptureLibrary) | `72bd2b18553493aa9850e434caf71bfa18952aac` | ETW の DX イベント復元。MIT License |
 | D3D12 Agility SDK | NuGet `Microsoft.Direct3D.D3D12` `1.619.5` | DxTimingCaptureLibrary のビルド |
-| WinPixEventRuntime | NuGet `1.0.240308001`（任意） | Probe の CPU／GPU PIX マーカー。MIT License |
+| WinPixEventRuntime | NuGet `1.0.240308001`（任意） | Probe の PIX マーカーと Capture API。MIT License |
+| Microsoft PIX | Windows にインストール済みの版（Capture 実行時） | GPU／Timing Capturer と `.wpix` の表示 |
 | PresentMon SDK Service | [公式 v2.6.0](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0)（任意） | Present の Frame Query。SDK Service／API は同梱しない |
 
 DxTimingCaptureLibrary は TracyX に同梱しない。ライブラリを別ディレクトリに Clone し、上記コミットを Checkout して `DxTimingCaptureLibrary.sln` の `Debug|x64` を NuGet restore 付きでビルドする。Viewer は Tracy の既存 CMake 依存パッケージを使用する。Tracy と DxTimingCaptureLibrary のライセンス・第三者通知はそれぞれのルートにあるファイルを参照する。
@@ -35,6 +36,7 @@ cmake --build build/profiler --config Debug
 
 `TracyXAgent` は `TRACYX_DX_TIMING_ROOT` を指定した場合のみビルドする。DxTimingCaptureLibrary の NuGet restore 後、Agility SDK Include が既定の NuGet キャッシュ以外にある場合は `TRACYX_D3D12_AGILITY_INCLUDE` を設定する。
 PIX NuGet が既定のキャッシュにある場合、Probe に PIX マーカーと DLL を自動追加する。別の場所なら `TRACYX_WINPIX_ROOT` を指定する。
+PIX Capture の対象は `TracyXProbePresentD3D12.exe 40 <session-directory> gpu` の第 3 引数で有効にする。`timing` も選べるが管理者権限が必要。GPU Capturer はデバイス作成前にロードするので、実行中プロセスへ後から切り替える場合は再起動が必要。Capture の手順と検証結果は [PIX Capture 検証記録](docs/M2-pix-capture.md) を参照。
 PresentMon SDK Service をインストールしている場合、`-DTRACYX_PRESENTMON_SDK_ROOT="C:/Program Files/Intel/PresentMon/SDK"` を CMake configure に追加する。`TracyXAgent` に PresentMon Frame Query を組み込み、`TracyXProbePresentMon` もビルドする。SDK がない構成でも Agent と Tracy は動作し、Viewer に PresentMon の利用不可理由を表示する。`TracyXProbePresentD3D12.exe 360 <session-directory>` は可視ウィンドウに 2 つの Swap Chain を表示する。非表示で起動すると表示結果の計測値が変わるため、可視状態で検証する。
 
 ## 計測手順
@@ -55,6 +57,7 @@ Agent の ETW Timestamp は `PROCESS_TRACE_MODE_RAW_TIMESTAMP` と QPC ベース
 - `events.jsonl`: イベントごとの版、Source、Clock domain、原時刻、相対時刻、誤差、Process／Thread／Device／Queue／CommandList／Resource ID、Frame Link、Label。
 - PresentMon イベントは Swap Chain ID、表示結果、表示間隔・GPU Busy・Display Latency を追加する。時間値はミリ秒から整数ナノ秒に変換し、欠損値は 0 と区別する。表示されるフレームには Present から Display までの区間も記録する。古い形式版 `1` のセッションは新しい項目なしで読み込める。
 - `frame-anchors.jsonl`: Probe が FrameMark 前後の QPC、系列 ID、連番を書いた Bridge 入力。複数系列は Viewer の Frame series メニューで切り替える。
+- `pix-captures.jsonl`: PIX Capture の種類、開始 Frame ID、開始／終了 QPC、HRESULT、保存ファイル、失敗理由。`.wpix` 本体は同じセッション内に置くか、Viewer の「Existing .wpix」から既存ファイルを明示的に関連付ける。Viewer の「Open in PIX」は Windows の `.wpix` 関連付けを使用する。
 
 未知版、欠損した必須ファイル、不正なイベント行、件数不一致、参照先 `.tracy` の欠損を読込時にエラーとして扱う。ファイルの途中失敗時には壊れたセッションとして読込できない。
 
@@ -68,4 +71,4 @@ Tracy の Frame hover から DX イベントを強調し、DX Event Inspector �
 
 PresentMon 2.6.0 SDK Service を導入し、`TracyXProbePresentMon` と Agent で同じ D3D12 PID を同時追跡した。SDK の Open／Track／Stop／Close はすべて成功。300 Frame／900 Queue submit に対して外部イベント 6,012 件、QueueSubmit 900 件、GPU Command List 3,000 件、ETW buffer loss／Agent drop／Bridge 欠番／デコード失敗はいずれも 0 だった。Agent 単独では Capture State の追加後に 300 Frame で QueueSubmit 873 件、GPU Command List 2,910 件を得た。収集開始前の数フレームは欠ける。
 
-Issue #12 の PresentMon 実測は [M2 検証記録](docs/M2-presentmon-validation.md) を参照。PIX アプリ本体による Capture と長時間・高負荷下の Viewer 応答性は未検証。
+Issue #12 の PresentMon 実測は [M2 検証記録](docs/M2-presentmon-validation.md)、Issue #13 の PIX Capture 実測は [PIX Capture 検証記録](docs/M2-pix-capture.md) を参照。長時間・高負荷下の Viewer 応答性は未検証。

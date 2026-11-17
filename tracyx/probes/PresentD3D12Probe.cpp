@@ -1,15 +1,26 @@
 #include <tracy/Tracy.hpp>
 #include "tracyx/FrameBridge.hpp"
+#include "tracyx/Session.hpp"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#ifdef TRACYX_HAS_PIX
+#include <WinPixEventRuntime/pix3.h>
+#endif
 
 #include <array>
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <string>
+#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -25,14 +36,71 @@ bool Check( HRESULT result, const char* operation )
     return false;
 }
 
+uint64_t NowQpc()
+{
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter( &counter );
+    return static_cast<uint64_t>( counter.QuadPart );
+}
+
+std::string HresultError( const char* operation, HRESULT result )
+{
+    char message[128]{};
+    std::snprintf( message, sizeof( message ), "%s failed: 0x%08X", operation, static_cast<unsigned>( result ) );
+    return message;
+}
+
+bool IsElevated()
+{
+    HANDLE token = nullptr;
+    if( !OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY, &token ) ) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD bytes = 0;
+    const auto result = GetTokenInformation( token, TokenElevation, &elevation, sizeof( elevation ), &bytes );
+    CloseHandle( token );
+    return result && elevation.TokenIsElevated;
+}
+
 } // namespace
 
 int main( int argc, char** argv )
 {
     const int frameCount = argc > 1 ? std::atoi( argv[1] ) : 180;
     if( frameCount <= 0 || frameCount > 10'000 ) return 2;
-    const auto directory = argc > 2 ? std::filesystem::path( argv[2] ) : std::filesystem::current_path();
+    const auto directory = std::filesystem::absolute( argc > 2 ? std::filesystem::path( argv[2] ) : std::filesystem::current_path() );
     std::filesystem::create_directories( directory );
+    const std::string pixMode = argc > 3 ? argv[3] : "";
+    if( argc > 4 || ( !pixMode.empty() && pixMode != "gpu" && pixMode != "timing" ) )
+    {
+        std::fprintf( stderr, "Usage: TracyXProbePresentD3D12 [frames] [directory] [gpu|timing]\n" );
+        return 2;
+    }
+    tracyx::PixCaptureRecord pixCapture;
+    pixCapture.kind = pixMode == "timing" ? tracyx::PixCaptureKind::Timing : tracyx::PixCaptureKind::Gpu;
+    pixCapture.fileName = "pix-" + ( pixMode == "timing" ? std::string( "timing" ) : std::string( "gpu" ) ) +
+        "-" + std::to_string( GetCurrentProcessId() ) + "-" + std::to_string( NowQpc() ) + ".wpix";
+    const auto pixFile = directory / pixCapture.fileName;
+    HMODULE capturer = nullptr;
+    if( !pixMode.empty() )
+    {
+#ifdef TRACYX_HAS_PIX
+        if( pixMode == "timing" && !IsElevated() )
+            pixCapture.error = "PIX Timing capture requires an elevated process; restart as administrator";
+        else
+        {
+            // GPU Capturer は D3D12 API の最初の呼び出しより前にロードする。
+            capturer = pixMode == "gpu" ? PIXLoadLatestWinPixGpuCapturerLibrary() : PIXLoadLatestWinPixTimingCapturerLibrary();
+            if( !capturer )
+                pixCapture.error = "PIX Capturer DLL unavailable; install PIX and restart before D3D12 device creation (Win32 " +
+                    std::to_string( GetLastError() ) + ")";
+        }
+#else
+        pixCapture.error = "WinPixEventRuntime SDK unavailable; configure TRACYX_WINPIX_ROOT and rebuild";
+#endif
+        pixCapture.qpcBegin = NowQpc();
+        pixCapture.qpcEnd = pixCapture.qpcBegin;
+        if( !pixCapture.error.empty() ) std::fprintf( stderr, "%s\n", pixCapture.error.c_str() );
+    }
     tracyx::FrameBridge bridge( directory / "frame-anchors.jsonl" );
     if( !bridge.Healthy() ) return 1;
 
@@ -93,9 +161,71 @@ int main( int argc, char** argv )
         QueryPerformanceCounter( &after );
         if( !bridge.Push( { static_cast<uint64_t>( frame ), static_cast<uint64_t>( before.QuadPart ),
             static_cast<uint64_t>( after.QuadPart ) } ) ) return 1;
+#ifdef TRACYX_HAS_PIX
+        const auto beginFrame = std::min( 10, frameCount );
+        const auto endFrame = std::min( beginFrame + 10, frameCount );
+        if( capturer && frame == beginFrame )
+        {
+            pixCapture.frameId = static_cast<uint64_t>( frame );
+            if( pixMode == "gpu" )
+            {
+                const auto target = PIXSetTargetWindow( windows[0] );
+                if( FAILED( target ) ) pixCapture.error = HresultError( "PIXSetTargetWindow", target );
+            }
+            if( pixCapture.error.empty() )
+            {
+                PIXCaptureParameters parameters{};
+                const auto fileName = pixFile.wstring();
+                if( pixMode == "gpu" ) parameters.GpuCaptureParameters.FileName = fileName.c_str();
+                else
+                {
+                    parameters.TimingCaptureParameters.FileName = fileName.c_str();
+                    parameters.TimingCaptureParameters.CaptureGpuTiming = TRUE;
+                    parameters.TimingCaptureParameters.CaptureCallstacks = TRUE;
+                    parameters.TimingCaptureParameters.CaptureCpuSamples = TRUE;
+                    parameters.TimingCaptureParameters.CpuSamplesPerSecond = 1000;
+                }
+                pixCapture.qpcBegin = NowQpc();
+                const auto result = PIXBeginCapture( pixMode == "gpu" ? PIX_CAPTURE_GPU : PIX_CAPTURE_TIMING, &parameters );
+                pixCapture.beginResult = static_cast<uint32_t>( result );
+                pixCapture.started = SUCCEEDED( result );
+                if( !pixCapture.started ) pixCapture.error = HresultError( "PIXBeginCapture", result );
+            }
+        }
+#endif
         for( const auto& swapChain : swapChains )
             if( !Check( swapChain->Present( 1, 0 ), "Present" ) ) return 1;
+#ifdef TRACYX_HAS_PIX
+        if( pixCapture.started && frame == endFrame )
+        {
+            const auto result = PIXEndCapture( FALSE );
+            pixCapture.qpcEnd = NowQpc();
+            pixCapture.endResult = static_cast<uint32_t>( result );
+            pixCapture.completed = SUCCEEDED( result );
+            if( !pixCapture.completed ) pixCapture.error = HresultError( "PIXEndCapture", result );
+        }
+#endif
         if( frame % 30 == 0 ) std::printf( "frame=%d presents=%d\n", frame, frame * 2 );
+    }
+    if( !pixMode.empty() )
+    {
+        if( pixCapture.qpcEnd < pixCapture.qpcBegin ) pixCapture.qpcEnd = NowQpc();
+        if( pixCapture.completed )
+        {
+            for( int attempt = 0; attempt < 50 && !std::filesystem::is_regular_file( pixFile ); ++attempt )
+                std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+            if( !std::filesystem::is_regular_file( pixFile ) )
+            {
+                pixCapture.completed = false;
+                pixCapture.error = "PIXEndCapture succeeded but the .wpix file was not created";
+            }
+        }
+        std::string error;
+        if( !tracyx::AppendPixCapture( directory / "pix-captures.jsonl", pixCapture, error ) )
+            std::fprintf( stderr, "PIX capture index: %s\n", error.c_str() );
+        std::printf( "PIX %s capture: %s%s%s%s\n", pixMode.c_str(),
+            pixCapture.completed ? "saved " : "unavailable", pixCapture.completed ? pixFile.string().c_str() : "",
+            pixCapture.error.empty() ? "" : " - ", pixCapture.error.c_str() );
     }
     for( auto window : windows ) DestroyWindow( window );
     UnregisterClassW( windowClass.lpszClassName, windowClass.hInstance );

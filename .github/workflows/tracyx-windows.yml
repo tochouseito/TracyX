@@ -5,10 +5,12 @@ on:
     branches:
       - codex/m0-m1-integrated-profiler
       - codex/issue-12-presentmon-metrics
+      - codex/issue-13-pix-capture
   pull_request:
     branches:
       - master
       - codex/m0-m1-integrated-profiler
+      - codex/issue-12-presentmon-metrics
   workflow_dispatch:
 
 permissions:
@@ -68,8 +70,14 @@ jobs:
       - name: Configure Agent and probes
         shell: pwsh
         run: |
+          $pixRoot = Join-Path $env:RUNNER_TEMP 'WinPixEventRuntime.1.0.240308001'
+          $package = Join-Path $env:RUNNER_TEMP 'WinPixEventRuntime.1.0.240308001.zip'
+          Invoke-WebRequest 'https://www.nuget.org/api/v2/package/WinPixEventRuntime/1.0.240308001' -OutFile $package
+          Expand-Archive -LiteralPath $package -DestinationPath $pixRoot
+          if (-not (Test-Path -LiteralPath (Join-Path $pixRoot 'Include/WinPixEventRuntime/pix3.h'))) { throw 'WinPixEventRuntime headers were not restored' }
           $args = @('-S', 'tracyx', '-B', 'build/tracyx-ci', '-G', 'Visual Studio 18 2026', '-A', 'x64', "-DTRACYX_DX_TIMING_ROOT=$env:TRACYX_DX_TIMING_ROOT")
           if ($env:TRACYX_PRESENTMON_SDK_ROOT) { $args += "-DTRACYX_PRESENTMON_SDK_ROOT=$env:TRACYX_PRESENTMON_SDK_ROOT" }
+          $args += "-DTRACYX_WINPIX_ROOT=$pixRoot"
           & cmake @args
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Agent and probes
