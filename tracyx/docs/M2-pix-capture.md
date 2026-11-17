@@ -10,9 +10,9 @@ GPU Capturer DLL は D3D12 デバイス作成前にロードする。起動済�
 
 ## Windows 実測
 
-2026-11-17、Microsoft PIX 2603.25 と WinPixEventRuntime 1.0.240308001 を使用。40 Frame／2 Swap Chain の GPU プローブは終了コード 0、Bridge drop 0。`PIXBeginCapture` と `PIXEndCapture` は HRESULT `0x00000000`、Frame 10 からの `.wpix` を生成した。`pixtool open-capture <file>` は終了コード 0 で GPU Playback engine を起動し、ファイルを開いた。非管理者の Timing プローブは権限不足を検出し、管理者として再起動する必要がある旨を索引に記録した。
+2026-11-17、Microsoft PIX 2603.25 と WinPixEventRuntime 1.0.240308001 を使用。40 Frame／2 Swap Chain の GPU プローブは終了コード 0、Bridge drop 0。`PIXBeginCapture` と `PIXEndCapture` は HRESULT `0x00000000`、Frame 10 からの `.wpix` を生成した。`pixtool open-capture <file>` は終了コード 0 で GPU Playback engine を起動し、ファイルを開いた。PIX GUI でも同じファイルを開き、Present と Queue の Wait／Signal を含むイベント一覧を確認した。非管理者の Timing プローブは権限不足を検出し、管理者として再起動する必要がある旨を索引に記録した。
 
-PIX GUI における Capture 内容の視覚確認と、管理者権限での Timing Capture 成功は未検証。GPU Capture のプローブは Present のみを実行するため、GPU Draw／Dispatch を含む記録の検証には実アプリでの計測が必要。
+TracyX Viewer の「Open in PIX」ボタンからの起動と、管理者権限での Timing Capture 成功は未検証。GPU Capture のプローブは Present のみを実行するため、GPU Draw／Dispatch を含む記録の検証には実アプリでの計測が必要。
 
 ## API 根拠
 
