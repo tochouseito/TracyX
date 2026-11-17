@@ -242,54 +242,62 @@ void Panel::Align( Worker& worker, const FrameData* frames )
     std::sort( anchors.begin(), anchors.end(), []( const auto* a, const auto* b ) {
         return a->frameLinks.front().frameId < b->frameLinks.front().frameId;
     } );
-    const auto matchCount = std::min<size_t>( { frameCount, anchors.size(), 128 } );
-    if( matchCount < 2 || m_session.manifest.qpcFrequency == 0 )
+    const auto maxMatchCount = std::min<size_t>( { frameCount, anchors.size(), 128 } );
+    if( maxMatchCount < 2 || m_session.manifest.qpcFrequency == 0 )
     {
         m_status = "Not enough frame anchors for this capture";
         return;
     }
 
-    // Capture は計測対象の起動後に接続できるため、先頭フレームの欠落を間隔で検出する。
-    const auto sampleCount = std::min<size_t>( matchCount - 1, 48 );
+    // Tracy の基底 Frame にある起動用イベントと、Capture 開始前の FrameMark を間隔で除く。
+    const auto sampleCount = std::min<size_t>( maxMatchCount - 1, 48 );
     long double bestScore = std::numeric_limits<long double>::max();
     size_t bestOffset = 0;
-    for( size_t offset = 0; offset + matchCount <= anchors.size(); ++offset )
+    size_t bestFrameStart = 0;
+    const auto frameStartLimit = std::min<size_t>( 8, frameCount - sampleCount - 1 );
+    for( size_t frameStart = 0; frameStart <= frameStartLimit; ++frameStart )
     {
-        std::vector<long double> deviations;
-        deviations.reserve( sampleCount );
-        for( size_t i = 0; i < sampleCount; ++i )
+        const auto matchCount = std::min<size_t>( frameCount - frameStart, anchors.size() );
+        for( size_t offset = 0; offset + matchCount <= anchors.size(); ++offset )
         {
-            const auto left = anchors[offset + i];
-            const auto right = anchors[offset + i + 1];
-            if( right->frameLinks.front().frameId != left->frameLinks.front().frameId + 1 )
+            std::vector<long double> deviations;
+            deviations.reserve( sampleCount );
+            for( size_t i = 0; i < sampleCount; ++i )
             {
-                deviations.clear();
-                break;
+                const auto left = anchors[offset + i];
+                const auto right = anchors[offset + i + 1];
+                if( right->frameLinks.front().frameId != left->frameLinks.front().frameId + 1 )
+                {
+                    deviations.clear();
+                    break;
+                }
+                const auto qpcDelta = static_cast<long double>( right->rawTimestamp - left->rawTimestamp ) *
+                    1'000'000'000.0L / m_session.manifest.qpcFrequency;
+                const auto tracyDelta = worker.GetFrameBegin( *frames, frameStart + i + 1 ) -
+                    worker.GetFrameBegin( *frames, frameStart + i );
+                deviations.push_back( std::abs( qpcDelta - tracyDelta ) );
             }
-            const auto qpcDelta = static_cast<long double>( right->rawTimestamp - left->rawTimestamp ) *
-                1'000'000'000.0L / m_session.manifest.qpcFrequency;
-            const auto tracyDelta = worker.GetFrameBegin( *frames, i + 1 ) - worker.GetFrameBegin( *frames, i );
-            deviations.push_back( std::abs( qpcDelta - tracyDelta ) );
+            if( deviations.size() != sampleCount ) continue;
+            std::sort( deviations.begin(), deviations.end() );
+            long double score = 0;
+            for( size_t i = 0; i < deviations.size() - std::min<size_t>( 2, deviations.size() - 1 ); ++i ) score += deviations[i];
+            if( score < bestScore ) { bestScore = score; bestOffset = offset; bestFrameStart = frameStart; }
         }
-        if( deviations.size() != sampleCount ) continue;
-        std::sort( deviations.begin(), deviations.end() );
-        long double score = 0;
-        for( size_t i = 0; i < deviations.size() - std::min<size_t>( 2, deviations.size() - 1 ); ++i ) score += deviations[i];
-        if( score < bestScore ) { bestScore = score; bestOffset = offset; }
     }
     if( !std::isfinite( bestScore ) || bestScore / std::max<size_t>( 1, sampleCount - 2 ) > 2'000'000.0L )
     {
         m_status = "Frame sequence does not match QPC anchors";
         return;
     }
-    const auto mappedCount = std::min( frameCount, anchors.size() - bestOffset );
+    const auto mappedCount = std::min( frameCount - bestFrameStart, anchors.size() - bestOffset );
     m_frameIdByIndex.resize( frameCount );
     size_t firstGood = 0;
     while( firstGood + 1 < mappedCount )
     {
         const auto qpcDelta = static_cast<long double>( anchors[bestOffset + firstGood + 1]->rawTimestamp -
             anchors[bestOffset + firstGood]->rawTimestamp ) * 1'000'000'000.0L / m_session.manifest.qpcFrequency;
-        const auto tracyDelta = worker.GetFrameBegin( *frames, firstGood + 1 ) - worker.GetFrameBegin( *frames, firstGood );
+        const auto tracyDelta = worker.GetFrameBegin( *frames, bestFrameStart + firstGood + 1 ) -
+            worker.GetFrameBegin( *frames, bestFrameStart + firstGood );
         if( std::abs( qpcDelta - tracyDelta ) <= 2'000'000.0L ) break;
         ++firstGood;
     }
@@ -297,9 +305,9 @@ void Panel::Align( Worker& worker, const FrameData* frames )
     {
         const auto* anchor = anchors[bestOffset + i];
         if( i > firstGood && anchor->frameLinks.front().frameId != anchors[bestOffset + i - 1]->frameLinks.front().frameId + 1 ) break;
-        const auto begin = worker.GetFrameBegin( *frames, i );
+        const auto begin = worker.GetFrameBegin( *frames, bestFrameStart + i );
         if( begin < 0 ) continue;
-        m_frameIdByIndex[i] = anchor->frameLinks.front().frameId;
+        m_frameIdByIndex[bestFrameStart + i] = anchor->frameLinks.front().frameId;
         if( fit.AddAnchor( { anchor->rawTimestamp, *anchor->rawEndTimestamp, static_cast<uint64_t>( begin ) } ) ) ++m_anchorCount;
     }
     if( m_anchorCount < 2 )
@@ -312,8 +320,8 @@ void Panel::Align( Worker& worker, const FrameData* frames )
     tracyx::FrameCorrelator correlator;
     for( size_t index = firstGood; index < mappedCount; ++index )
     {
-        const auto begin = worker.GetFrameBegin( *frames, index );
-        const auto end = worker.GetFrameEnd( *frames, index );
+        const auto begin = worker.GetFrameBegin( *frames, bestFrameStart + index );
+        const auto end = worker.GetFrameEnd( *frames, bestFrameStart + index );
         if( begin >= 0 && end >= begin ) correlator.AddFrame( { anchors[bestOffset + index]->frameLinks.front().frameId,
             m_session.manifest.process, static_cast<uint64_t>( begin ), static_cast<uint64_t>( end ), m_seriesId } );
     }
