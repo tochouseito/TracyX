@@ -25,6 +25,10 @@ struct SessionManifest
     uint64_t d3d12DecodeErrors = 0;
     uint64_t dxgkDecodeErrors = 0;
     uint64_t clockResidualNs = 0;
+    uint32_t presentMonState = 0;
+    uint64_t presentMonFrames = 0;
+    uint64_t presentMonDropped = 0;
+    std::string presentMonError;
     std::string tracyFile;
 };
 

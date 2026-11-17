@@ -2,6 +2,9 @@
 #include "tracyx/Clock.hpp"
 #include "tracyx/LiveProtocol.hpp"
 #include "tracyx/Session.hpp"
+#ifdef TRACYX_HAS_PRESENTMON
+#include "PresentMonAdapter.hpp"
+#endif
 
 #include <DxTimingCaptureLibrary/DxTimingCaptureLibrary.h>
 #include <DxTimingCaptureLibrary/EtwProviders.h>
@@ -15,9 +18,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -61,6 +66,10 @@ struct AgentState
     std::atomic<uint64_t> dxgkEvents{ 0 };
     std::atomic<uint64_t> d3d12DecodeErrors{ 0 };
     std::atomic<uint64_t> dxgkDecodeErrors{ 0 };
+    std::atomic<uint32_t> presentMonState{ 0 };
+    std::atomic<uint64_t> presentMonFrames{ 0 };
+    std::atomic<uint64_t> presentMonDropped{ 0 };
+    std::string presentMonError;
     std::unordered_map<uint64_t, uint64_t> lastFrameBySeries;
     std::mutex eventMutex;
     std::unique_ptr<DxTimingCaptureEventHandler> handler;
@@ -89,7 +98,7 @@ struct AgentState
             if( event.rawEndTimestamp && *event.rawEndTimestamp >= originNs )
                 event.normalizedEndNs = *event.rawEndTimestamp - originNs;
         }
-        else if( event.source == tracyx::Source::Bridge )
+        else if( event.source == tracyx::Source::Bridge || event.source == tracyx::Source::PresentMon )
         {
             if( const auto time = qpcClock.Normalize( event.rawTimestamp ) ) event.normalizedNs = time->nanoseconds;
             if( event.rawEndTimestamp )
@@ -339,6 +348,14 @@ void StreamBatches( AgentState& state )
             batch.dxgkEvents = state.dxgkEvents.load();
             batch.d3d12DecodeErrors = state.d3d12DecodeErrors.load();
             batch.dxgkDecodeErrors = state.dxgkDecodeErrors.load();
+            batch.presentMonState = state.presentMonState.load();
+            batch.presentMonFrames = state.presentMonFrames.load();
+            batch.presentMonDropped = state.presentMonDropped.load();
+            {
+                std::lock_guard lock( state.eventMutex );
+                std::memcpy( batch.presentMonError, state.presentMonError.data(),
+                    std::min( state.presentMonError.size(), sizeof( batch.presentMonError ) - 1 ) );
+            }
             {
                 std::lock_guard lock( state.eventMutex );
                 batch.count = static_cast<uint32_t>( std::min<size_t>( tracyx::LiveBatchCapacity,
@@ -447,6 +464,73 @@ int wmain( int argc, wchar_t** argv )
         }
     } );
 
+#ifdef TRACYX_HAS_PRESENTMON
+    std::thread presentMon( [&]() {
+        tracyx::PresentMonAdapter adapter;
+        std::string error;
+        if( !adapter.Start( static_cast<uint32_t>( pid ), error ) )
+        {
+            { std::lock_guard lock( state.eventMutex ); state.presentMonError = error; }
+            state.presentMonState.store( 2 );
+            return;
+        }
+        state.presentMonState.store( 1 );
+        const auto consume = [&]() {
+            std::vector<tracyx::PresentMonFrame> frames;
+            if( !adapter.Poll( frames, error ) ) return false;
+            for( const auto& frame : frames )
+            {
+                tracyx::Event event;
+                event.source = tracyx::Source::PresentMon;
+                event.kind = tracyx::EventKind::Present;
+                event.clock = tracyx::ClockDomain::WindowsQpc;
+                event.rawTimestamp = frame.presentQpc;
+                event.process = state.session.manifest.process;
+                event.swapChainId = frame.swapChainId;
+                event.displayStatus = frame.dropped ? tracyx::DisplayStatus::Dropped
+                    : frame.untilDisplayedNs ? tracyx::DisplayStatus::Displayed : tracyx::DisplayStatus::Unknown;
+                event.displayIntervalNs = frame.displayIntervalNs;
+                event.gpuBusyNs = frame.gpuBusyNs;
+                event.displayLatencyNs = frame.displayLatencyNs;
+                if( event.displayStatus == tracyx::DisplayStatus::Displayed )
+                {
+                    const auto ticks = static_cast<long double>( *frame.untilDisplayedNs ) * frequency.QuadPart / 1'000'000'000.0L;
+                    if( ticks <= static_cast<long double>( std::numeric_limits<uint64_t>::max() - frame.presentQpc ) )
+                        event.rawEndTimestamp = frame.presentQpc + static_cast<uint64_t>( ticks + 0.5L );
+                }
+                event.label = event.displayStatus == tracyx::DisplayStatus::Dropped ? "Present dropped"
+                    : event.displayStatus == tracyx::DisplayStatus::Displayed ? "Present displayed" : "Present outcome unknown";
+                state.Push( std::move( event ) );
+                state.presentMonFrames.fetch_add( 1 );
+                if( frame.dropped ) state.presentMonDropped.fetch_add( 1 );
+            }
+            return true;
+        };
+        while( state.running.load() )
+        {
+            if( !consume() )
+            {
+                { std::lock_guard lock( state.eventMutex ); state.presentMonError = error; }
+                state.presentMonState.store( 2 );
+                return;
+            }
+            std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+        }
+        for( int drain = 0; drain < 10; ++drain )
+        {
+            if( !consume() )
+            {
+                { std::lock_guard lock( state.eventMutex ); state.presentMonError = error; }
+                state.presentMonState.store( 2 );
+                break;
+            }
+            std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+        }
+    } );
+#else
+    { std::lock_guard lock( state.eventMutex ); state.presentMonError = "PresentMon SDK was not configured"; }
+#endif
+
     std::thread consumer( [&]() {
         EVENT_TRACE_LOGFILEW trace{};
         trace.LoggerName = const_cast<LPWSTR>( name.c_str() );
@@ -480,6 +564,9 @@ int wmain( int argc, wchar_t** argv )
     ControlTraceW( session, name.c_str(), &properties.properties, EVENT_TRACE_CONTROL_STOP );
     consumer.join();
     bridge.join();
+#ifdef TRACYX_HAS_PRESENTMON
+    presentMon.join();
+#endif
     ReadAnchors( state, anchorFile, nextAnchor );
     CancelSynchronousIo( stream.native_handle() );
     stream.join();
@@ -490,6 +577,10 @@ int wmain( int argc, wchar_t** argv )
     state.session.manifest.dxgkEvents = state.dxgkEvents.load();
     state.session.manifest.d3d12DecodeErrors = state.d3d12DecodeErrors.load();
     state.session.manifest.dxgkDecodeErrors = state.dxgkDecodeErrors.load();
+    state.session.manifest.presentMonState = state.presentMonState.load();
+    state.session.manifest.presentMonFrames = state.presentMonFrames.load();
+    state.session.manifest.presentMonDropped = state.presentMonDropped.load();
+    state.session.manifest.presentMonError = state.presentMonError;
     if( std::filesystem::exists( std::filesystem::path( argv[2] ) / "tracy.tracy" ) )
     {
         state.session.manifest.tracyFile = "tracy.tracy";

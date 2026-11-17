@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -159,6 +160,10 @@ void Panel::PollLive( Worker& worker, const FrameData* frames )
         m_session.manifest.dxgkEvents = batch.dxgkEvents;
         m_session.manifest.d3d12DecodeErrors = batch.d3d12DecodeErrors;
         m_session.manifest.dxgkDecodeErrors = batch.dxgkDecodeErrors;
+        m_session.manifest.presentMonState = batch.presentMonState;
+        m_session.manifest.presentMonFrames = batch.presentMonFrames;
+        m_session.manifest.presentMonDropped = batch.presentMonDropped;
+        m_session.manifest.presentMonError = batch.presentMonError;
         m_liveBacklog = batch.backlog;
         m_loaded = true;
         for( uint32_t i = 0; i < batch.count; ++i )
@@ -215,6 +220,9 @@ void Panel::Align( Worker& worker, const FrameData* frames )
     m_aligned.clear();
     m_frameIdByIndex.clear();
     m_unaligned = 0;
+    m_processMismatch = 0;
+    m_unconvertibleClock = 0;
+    m_outsideAnchors = 0;
     m_anchorCount = 0;
     if( !frames || !m_loaded ) return;
     if( worker.GetPid() != m_session.manifest.process.processId )
@@ -322,16 +330,17 @@ void Panel::Align( Worker& worker, const FrameData* frames )
     {
         const auto& event = m_session.events[index];
         if( event.kind == tracyx::EventKind::FrameAnchor ) continue;
-        if( event.process != m_session.manifest.process ) { ++m_unaligned; continue; }
+        if( event.process != m_session.manifest.process ) { ++m_unaligned; ++m_processMismatch; continue; }
         const auto qpcBegin = ToQpc( event.rawTimestamp, event.clock, m_session.manifest );
         const auto qpcEnd = event.rawEndTimestamp ? ToQpc( *event.rawEndTimestamp, event.clock, m_session.manifest ) : qpcBegin;
-        if( !qpcBegin || !qpcEnd ) { ++m_unaligned; continue; }
+        if( !qpcBegin || !qpcEnd ) { ++m_unaligned; ++m_unconvertibleClock; continue; }
         const auto begin = fit.ToTracyNs( *qpcBegin );
         const auto end = fit.ToTracyNs( *qpcEnd );
         if( !begin || !end || end->nanoseconds < begin->nanoseconds ||
             end->nanoseconds > static_cast<uint64_t>( std::numeric_limits<int64_t>::max() ) )
         {
             ++m_unaligned;
+            ++m_outsideAnchors;
             continue;
         }
         tracyx::Event mapped = event;
@@ -422,7 +431,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         }
         ImGui::EndCombo();
     }
-    ImGui::Text( "ETW events: %zu | aligned: %zu | outside anchors: %zu | anchors: %zu | fit residual: %llu ns",
+    ImGui::Text( "External events: %zu | aligned: %zu | outside anchors: %zu | anchors: %zu | fit residual: %llu ns",
         m_session.events.size(), m_aligned.size(), m_unaligned, m_anchorCount,
         static_cast<unsigned long long>( m_residual ) );
     ImGui::Text( "ETW losses: %llu | Agent drops: %llu | Bridge missing: %llu",
@@ -435,6 +444,14 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         static_cast<unsigned long long>( m_session.manifest.dxgkEvents ),
         static_cast<unsigned long long>( m_session.manifest.dxgkDecodeErrors ) );
     ImGui::TextUnformatted( "ETW does not attribute session buffer losses to an individual provider." );
+    ImGui::Text( "PresentMon: %s | presents: %llu | dropped: %llu",
+        m_session.manifest.presentMonState == 1 ? "active" : m_session.manifest.presentMonState == 2 ? "failed" : "unavailable",
+        static_cast<unsigned long long>( m_session.manifest.presentMonFrames ),
+        static_cast<unsigned long long>( m_session.manifest.presentMonDropped ) );
+    if( !m_session.manifest.presentMonError.empty() ) ImGui::TextUnformatted( m_session.manifest.presentMonError.c_str() );
+    if( m_unaligned )
+        ImGui::Text( "Unaligned: outside anchors %zu | process mismatch %zu | unconvertible clock %zu",
+            m_outsideAnchors, m_processMismatch, m_unconvertibleClock );
     if( m_livePid != 0 ) ImGui::Text( "Pipe backlog: %llu | Viewer drops: %llu",
         static_cast<unsigned long long>( m_liveBacklog ), static_cast<unsigned long long>( m_viewerDrops.load() ) );
     if( m_livePid != 0 ) ImGui::Text( "Bridge anchors received: %zu", m_liveLastAnchorCount );
@@ -452,24 +469,27 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         const auto width = std::max( 1.0f, ImGui::GetContentRegionAvail().x );
         constexpr float rowHeight = 22.0f;
         const auto first = m_aligned.begin();
-        std::vector<std::pair<uint64_t, uint64_t>> lanes;
+        using Lane = std::tuple<uint8_t, uint64_t, uint64_t>;
+        std::vector<Lane> lanes;
         for( auto it = first; it != m_aligned.end() && it->begin < viewEnd; ++it )
         {
             if( it->end < viewBegin ) continue;
             const auto& event = m_session.events[it->index];
-            const auto lane = std::pair{ event.queueId, uint64_t( 0 ) };
+            const Lane lane = event.source == tracyx::Source::PresentMon
+                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
             if( std::find( lanes.begin(), lanes.end(), lane ) == lanes.end() ) lanes.push_back( lane );
         }
         if( m_selected > 0 && m_selected <= m_session.events.size() )
         {
             const auto& selected = m_session.events[m_selected - 1];
-            if( selected.commandListId != 0 ) lanes.push_back( { selected.queueId, selected.commandListId } );
+            if( selected.source != tracyx::Source::PresentMon && selected.commandListId != 0 )
+                lanes.push_back( { 0, selected.queueId, selected.commandListId } );
         }
         std::sort( lanes.begin(), lanes.end() );
         lanes.erase( std::unique( lanes.begin(), lanes.end() ), lanes.end() );
         const auto omittedLanes = lanes.size() > 48 ? lanes.size() - 48 : 0;
         if( omittedLanes ) lanes.resize( 48 );
-        if( omittedLanes ) ImGui::Text( "%zu DX queue lanes omitted", omittedLanes );
+        if( omittedLanes ) ImGui::Text( "%zu lanes omitted", omittedLanes );
         const auto origin = ImGui::GetCursorScreenPos();
         const auto height = rowHeight * std::max<size_t>( 1, lanes.size() );
         ImGui::InvisibleButton( "DX lanes", { width, height } );
@@ -479,9 +499,10 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         for( size_t row = 0; row < lanes.size(); ++row )
         {
             const auto top = origin.y + row * rowHeight;
-            const auto label = lanes[row].second == 0
-                ? "DX queue " + std::to_string( lanes[row].first )
-                : "DX queue " + std::to_string( lanes[row].first ) + " / command list " + std::to_string( lanes[row].second );
+            const auto [laneType, laneId, detailId] = lanes[row];
+            const auto label = laneType == 1 ? "Present swap chain " + std::to_string( laneId )
+                : detailId == 0 ? "DX queue " + std::to_string( laneId )
+                : "DX queue " + std::to_string( laneId ) + " / command list " + std::to_string( detailId );
             draw->AddText( { origin.x + 3, top + 2 }, IM_COL32( 220, 220, 220, 255 ),
                 label.c_str() );
             draw->AddLine( { origin.x, top + rowHeight - 1 }, { origin.x + width, top + rowHeight - 1 }, IM_COL32( 80, 80, 80, 255 ) );
@@ -492,12 +513,17 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             if( it->end < viewBegin ) continue;
             ++drawn;
             const auto& event = m_session.events[it->index];
-            const auto rowIt = std::lower_bound( lanes.begin(), lanes.end(),
-                std::pair{ event.queueId, uint64_t( 0 ) } );
-            if( rowIt == lanes.end() || *rowIt != std::pair{ event.queueId, uint64_t( 0 ) } ) continue;
+            const Lane lane = event.source == tracyx::Source::PresentMon
+                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
+            const auto rowIt = std::lower_bound( lanes.begin(), lanes.end(), lane );
+            if( rowIt == lanes.end() || *rowIt != lane ) continue;
             const auto left = origin.x + static_cast<float>( std::clamp( ( it->begin - viewBegin ) / span, 0.0, 1.0 ) * width );
             const auto right = origin.x + std::max( 2.0f, static_cast<float>( std::clamp( ( it->end - viewBegin ) / span, 0.0, 1.0 ) * width ) );
-            const auto color = event.kind == tracyx::EventKind::PsoCompile ? IM_COL32( 230, 175, 70, 230 ) : IM_COL32( 85, 175, 235, 230 );
+            const auto color = event.source == tracyx::Source::PresentMon
+                ? event.displayStatus == tracyx::DisplayStatus::Dropped ? IM_COL32( 225, 90, 90, 230 )
+                    : event.displayStatus == tracyx::DisplayStatus::Displayed ? IM_COL32( 90, 205, 135, 230 )
+                    : IM_COL32( 150, 150, 150, 230 )
+                : event.kind == tracyx::EventKind::PsoCompile ? IM_COL32( 230, 175, 70, 230 ) : IM_COL32( 85, 175, 235, 230 );
             const auto drawInRow = [&]( size_t row ) {
                 const auto top = origin.y + row * rowHeight + 3;
                 draw->AddRectFilled( { left, top }, { std::max( left + 2, right ), top + rowHeight - 6 }, color );
@@ -509,8 +535,9 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 if( ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect( { left, top }, { std::max( left + 2, right ), top + rowHeight - 6 } ) )
                 {
                     m_hovered = it->index + 1;
-                    ImGui::SetTooltip( "%s | %s | event %llu | command list %llu", KindName( event.kind ),
+                    ImGui::SetTooltip( "%s | %s | event %llu | swap chain %llu | command list %llu", KindName( event.kind ),
                         event.label.c_str(), static_cast<unsigned long long>( event.eventId ),
+                        static_cast<unsigned long long>( event.swapChainId ),
                         static_cast<unsigned long long>( event.commandListId ) );
                     if( laneClicked )
                     {
@@ -521,17 +548,17 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 }
             };
             drawInRow( static_cast<size_t>( rowIt - lanes.begin() ) );
-            if( event.commandListId != 0 && m_selected > 0 && m_selected <= m_session.events.size() &&
+            if( event.source != tracyx::Source::PresentMon && event.commandListId != 0 && m_selected > 0 && m_selected <= m_session.events.size() &&
                 event.queueId == m_session.events[m_selected - 1].queueId &&
                 event.commandListId == m_session.events[m_selected - 1].commandListId )
             {
-                const auto detail = std::lower_bound( lanes.begin(), lanes.end(),
-                    std::pair{ event.queueId, event.commandListId } );
-                if( detail != lanes.end() && *detail == std::pair{ event.queueId, event.commandListId } )
+                const Lane detailLane{ 0, event.queueId, event.commandListId };
+                const auto detail = std::lower_bound( lanes.begin(), lanes.end(), detailLane );
+                if( detail != lanes.end() && *detail == detailLane )
                     drawInRow( static_cast<size_t>( detail - lanes.begin() ) );
             }
         }
-        if( drawn == 20'000 ) ImGui::TextUnformatted( "DX event drawing limited to 20,000 events in this view." );
+        if( drawn == 20'000 ) ImGui::TextUnformatted( "Event drawing limited to 20,000 events in this view." );
     }
 
     if( m_selected > 0 && m_selected <= m_session.events.size() )
@@ -554,6 +581,20 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         ImGui::Text( "Device %llu | queue %llu | command list %llu | resource %llu",
             static_cast<unsigned long long>( event.deviceId ), static_cast<unsigned long long>( event.queueId ),
             static_cast<unsigned long long>( event.commandListId ), static_cast<unsigned long long>( event.resourceId ) );
+        if( event.source == tracyx::Source::PresentMon )
+        {
+            ImGui::Text( "Swap chain %llu | display %s", static_cast<unsigned long long>( event.swapChainId ),
+                event.displayStatus == tracyx::DisplayStatus::Dropped ? "dropped" :
+                event.displayStatus == tracyx::DisplayStatus::Displayed ? "displayed" : "unknown" );
+            const auto metric = []( const char* name, const std::optional<uint64_t>& value ) {
+                if( value ) ImGui::Text( "%s: %.3f ms", name, *value / 1'000'000.0 );
+                else ImGui::Text( "%s: unavailable", name );
+            };
+            metric( "Display interval", event.displayIntervalNs );
+            metric( "GPU busy", event.gpuBusyNs );
+            metric( "Display latency", event.displayLatencyNs );
+            if( event.rawEndTimestamp ) ImGui::TextUnformatted( "Present to display span is shown in the lane." );
+        }
         const auto found = std::find_if( m_aligned.begin(), m_aligned.end(), [&]( const auto& item ) { return item.index == m_selected - 1; } );
         if( found != m_aligned.end() )
         {
