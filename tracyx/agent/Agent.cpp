@@ -376,6 +376,8 @@ private:
 
 void WINAPI OnEvent( EVENT_RECORD* record )
 {
+    if( IsEqualGUID( record->EventHeader.ProviderId, DirectStorage::DStorageEtwProvider ) &&
+        record->EventHeader.ProcessId != activeAgent->session.manifest.process.processId ) return;
     const auto d3d12 = IsEqualGUID( record->EventHeader.ProviderId, Direct3D12EtwProviderGuid );
     const auto dxgk = IsEqualGUID( record->EventHeader.ProviderId, DxgkControlGuid );
     if( d3d12 ) activeAgent->d3d12Events.fetch_add( 1 );

@@ -1,6 +1,6 @@
 # M3 optional diagnostics
 
-The Agent enables the DirectStorage ETW provider when available. Correlated read requests and queue submissions appear in separate DirectStorage queue lanes. A read span measures enqueue to completion, including time in the DirectStorage queue; it is not a disk-only latency measurement. If provider activation fails, the Agent logs the Win32 status and keeps the D3D12 capture running. A session with no DirectStorage events may simply have performed no DirectStorage I/O.
+The Agent enables the DirectStorage ETW provider when available and filters its records to the target PID before passing them to DxTimingCaptureLibrary. Correlated read requests and queue submissions appear in separate DirectStorage queue lanes. A read span measures enqueue to completion, including time in the DirectStorage queue; it is not a disk-only latency measurement. If provider activation fails, the Agent logs the Win32 status and keeps the D3D12 capture running. A session with no DirectStorage events may simply have performed no DirectStorage I/O.
 
 The D3D12 API-object callback records committed, placed and reserved resource creations and resource destruction. The library assigns monotonically increasing object IDs for the capture, so reuse of an underlying API handle does not merge two lifetimes. Resource lanes are keyed by these IDs. Captures that start after resource creation can have a destroy without a matching create. The first 48 visible lanes are rendered in the current timeline view.
 
