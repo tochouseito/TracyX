@@ -43,7 +43,7 @@ PresentMon SDK Service をインストールしている場合、`-DTRACYX_PRESE
 
 1. `TracyXProbeD3D12.exe 600 C:\temp\TracyXSession` を起動する。Direct、Compute、Copy の 3 Queue、3 フレーム in-flight の D3D12 サンプル。`FrameMark` と前後の QPC は上限付きメモリ Queue から専用 Thread が `frame-anchors.jsonl` に書く。PIX NuGet がある場合は CPU／GPU PIX マーカーも発行する。一般 C++ の Tracy 単体動作は `TracyXProbeCpp.exe` で確認できる。
 2. 対象 PID に対して `TracyXAgent.exe <PID> C:\temp\TracyXSession` を起動する。ETW の Provider を有効化し、RAW QPC を指定する。ETW セッションの開始権限がない場合は `StartTraceW` / `EnableTraceEx2` のエラーを表示して終了する。収集上限の検証には第 3 引数で最大イベント数を指定できる。
-3. 対象が動作中に `tracy-capture.exe -o C:\temp\TracyXSession\tracy.tracy -a 127.0.0.1 -s 4` で Tracy を記録する。Agent は対象終了後に `session.json` と `events.jsonl` を保存する。
+3. 対象が動作中に `tracy-capture.exe -o C:\temp\TracyXSession\tracy.tracy -a 127.0.0.1 -s 4` で Tracy を記録する。Agent は対象終了後に `session.json` と、その `events_file` が指す `events-*.jsonl` を保存する。
 4. `tracy-profiler.exe C:\temp\TracyXSession\tracy.tracy` で開く。同じディレクトリの統合セッションを自動読込する。別ディレクトリを表示する場合は「TracyX DX」の Session directory に指定する。
 
 Live 表示では Viewer を `tracy-profiler.exe -a 127.0.0.1` で起動する。Agent はローカル専用の `\\.\pipe\TracyX.<PID>` で上限 128 件のバッチを送る。TracyX DX は接続先 PID を使ってパイプを開き、受信済みアンカーの範囲だけ同期する。Agent が落ちても対象プロセスは独立して動作する。Viewer は ETW loss、Agent の Queue drop、Bridge の欠番、パイプ backlog、Viewer 側 drop、D3D12／DXGK の受信件数とデコード失敗、PresentMon の状態・取得数・Dropped 数を表示する。ETW の buffer loss は Provider 別に帰属できないためセッション全体の値として示す。
@@ -59,7 +59,7 @@ Agent の ETW Timestamp は `PROCESS_TRACE_MODE_RAW_TIMESTAMP` と QPC ベース
 - `frame-anchors.jsonl`: Probe が FrameMark 前後の QPC、系列 ID、連番を書いた Bridge 入力。複数系列は Viewer の Frame series メニューで切り替える。
 - `pix-captures.jsonl`: PIX Capture の種類、開始 Frame ID、開始／終了 QPC、HRESULT、保存ファイル、失敗理由。`.wpix` 本体は同じセッション内に置く。Viewer の「Existing .wpix」で選んだファイルはセッション内にコピーして関連付ける。Viewer の「Open in PIX」は Windows の `.wpix` 関連付けを使用する。
 
-未知版、欠損した必須ファイル、不正なイベント行、件数不一致、参照先 `.tracy` の欠損を読込時にエラーとして扱う。ファイルの途中失敗時には壊れたセッションとして読込できない。
+未知版、欠損した必須ファイル、不正なイベント行、件数不一致、参照先 `.tracy` の欠損を読込時にエラーとして扱う。保存中に失敗した場合は新しい `session.json` を公開せず、以前の有効なセッションを保持する。
 
 ## 実測と未完了
 

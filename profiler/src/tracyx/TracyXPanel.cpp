@@ -273,7 +273,8 @@ void Panel::OpenPixCapture( size_t index )
     const auto& capture = m_pixCaptures[index];
     const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
     std::error_code ec;
-    if( !capture.completed || file.extension() != L".wpix" || !std::filesystem::is_regular_file( file, ec ) )
+    if( !capture.completed || file.extension() != L".wpix" ||
+        !std::filesystem::is_regular_file( std::filesystem::symlink_status( file, ec ) ) )
     {
         m_status = "The selected .wpix file is unavailable";
         return;
@@ -565,7 +566,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
             std::error_code ec;
             const auto available = capture.completed && file.extension() == L".wpix" &&
-                std::filesystem::is_regular_file( file, ec );
+                std::filesystem::is_regular_file( std::filesystem::symlink_status( file, ec ) );
             const auto& links = m_pixLinks[index];
             const auto relatedToHover = hoverFrameId != 0 && std::any_of( links.begin(), links.end(), [&]( const auto& link ) {
                 return link.seriesId == m_seriesId && link.frameId == hoverFrameId;
