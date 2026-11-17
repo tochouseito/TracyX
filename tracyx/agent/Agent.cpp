@@ -391,6 +391,22 @@ int wmain( int argc, wchar_t** argv )
         std::fwprintf( stderr, L"Cannot query target process start time.\n" );
         return 2;
     }
+    const auto instanceName = std::wstring( L"Global\\TracyX.Agent." ) + std::to_wstring( pid ) +
+        L"." + std::to_wstring( started );
+    const auto instance = CreateMutexW( nullptr, FALSE, instanceName.c_str() );
+    const auto instanceError = GetLastError();
+    if( !instance )
+    {
+        std::fwprintf( stderr, L"Cannot reserve Agent for PID %lu (Win32 %lu).\n", pid, instanceError );
+        return 1;
+    }
+    const auto closeHandle = []( HANDLE handle ) { CloseHandle( handle ); };
+    std::unique_ptr<void, decltype( closeHandle )> instanceGuard( instance, closeHandle );
+    if( instanceError == ERROR_ALREADY_EXISTS )
+    {
+        std::fwprintf( stderr, L"Agent already collecting PID %lu; stop it before starting another Agent.\n", pid );
+        return 3;
+    }
     LARGE_INTEGER frequency{}, origin{};
     if( !QueryPerformanceFrequency( &frequency ) || !QueryPerformanceCounter( &origin ) ) return 2;
     size_t maxEvents = 1'000'000;

@@ -213,12 +213,48 @@ void Panel::Load( const std::filesystem::path& directory )
         !tracyx::LoadPixCaptures( directory / "pix-captures.jsonl", m_pixCaptures, pixError ) )
         m_status = pixError;
     else m_status = "Session loaded";
+    RefreshPixLinks();
     m_loaded = true;
     m_aligned.clear();
     m_frameIdByIndex.clear();
     m_anchorCount = 0;
     m_selected = 0;
     m_seriesId = 0;
+}
+
+void Panel::RefreshPixLinks()
+{
+    std::vector<tracyx::FrameAnchorRecord> anchors;
+    for( const auto& event : m_session.events )
+    {
+        if( event.kind != tracyx::EventKind::FrameAnchor || event.frameLinks.empty() || !event.rawEndTimestamp ) continue;
+        const auto& link = event.frameLinks.front();
+        anchors.push_back( { link.frameId, event.rawTimestamp, *event.rawEndTimestamp, link.seriesId } );
+    }
+    m_pixLinks.clear();
+    m_pixLinks.reserve( m_pixCaptures.size() );
+    for( const auto& capture : m_pixCaptures )
+        m_pixLinks.push_back( tracyx::FindPixCaptureFrames( capture, anchors ) );
+}
+
+void Panel::OpenPixCapture( size_t index )
+{
+    if( index >= m_pixCaptures.size() ) return;
+    const auto& capture = m_pixCaptures[index];
+    const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
+    std::error_code ec;
+    if( !capture.completed || file.extension() != L".wpix" || !std::filesystem::is_regular_file( file, ec ) )
+    {
+        m_status = "The selected .wpix file is unavailable";
+        return;
+    }
+#ifdef _WIN32
+    const auto result = reinterpret_cast<intptr_t>( ShellExecuteW( nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL ) );
+    m_status = result > 32 ? "Opening capture in PIX" :
+        "Windows cannot open .wpix; install PIX or repair its file association (ShellExecute " + std::to_string( result ) + ")";
+#else
+    m_status = "Opening .wpix requires Windows";
+#endif
 }
 
 void Panel::Align( Worker& worker, const FrameData* frames )
@@ -412,6 +448,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( m_loaded && m_anchorCount == 0 && frames && worker.GetFrameCount( *frames ) >= 2 ) Align( worker, frames );
     ImGui::TextUnformatted( m_status.c_str() );
     if( !m_loaded ) { ImGui::End(); return; }
+    const auto hoverFrameId = frameHover >= 0 && static_cast<size_t>( frameHover ) < m_frameIdByIndex.size()
+        ? m_frameIdByIndex[frameHover] : 0;
     if( ImGui::CollapsingHeader( "PIX Captures", ImGuiTreeNodeFlags_DefaultOpen ) )
     {
         ImGui::InputText( "Existing .wpix", m_pixPath.data(), m_pixPath.size() );
@@ -433,6 +471,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
                 {
                     m_pixCaptures.push_back( std::move( capture ) );
+                    RefreshPixLinks();
                     m_status = "Existing PIX capture attached";
                 }
                 else m_status = error;
@@ -444,7 +483,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             std::string error;
             if( !tracyx::LoadPixCaptures( m_sessionDirectory / "pix-captures.jsonl", m_pixCaptures, error ) )
                 m_status = error;
-            else m_status = "PIX capture index refreshed";
+            else { RefreshPixLinks(); m_status = "PIX capture index refreshed"; }
         }
         for( size_t index = 0; index < m_pixCaptures.size(); ++index )
         {
@@ -455,6 +494,10 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             std::error_code ec;
             const auto available = capture.completed && file.extension() == L".wpix" &&
                 std::filesystem::is_regular_file( file, ec );
+            const auto& links = m_pixLinks[index];
+            const auto relatedToHover = hoverFrameId != 0 && std::any_of( links.begin(), links.end(), [&]( const auto& link ) {
+                return link.seriesId == m_seriesId && link.frameId == hoverFrameId;
+            } );
             ImGui::PushID( static_cast<int>( index ) );
             ImGui::Text( "%s | frame %llu | QPC %llu - %llu | %s", kind,
                 static_cast<unsigned long long>( capture.frameId ),
@@ -462,17 +505,19 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 static_cast<unsigned long long>( capture.qpcEnd ), available ? "ready" : "unavailable" );
             ImGui::SameLine();
             ImGui::BeginDisabled( !available );
-            if( ImGui::Button( "Open in PIX" ) )
-            {
-#ifdef _WIN32
-                const auto result = reinterpret_cast<intptr_t>( ShellExecuteW( nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL ) );
-                m_status = result > 32 ? "Opening capture in PIX" :
-                    "Windows cannot open .wpix; install PIX or repair its file association (ShellExecute " + std::to_string( result ) + ")";
-#else
-                m_status = "Opening .wpix requires Windows";
-#endif
-            }
+            if( ImGui::Button( "Open in PIX" ) ) OpenPixCapture( index );
             ImGui::EndDisabled();
+            if( !links.empty() )
+            {
+                const auto range = std::minmax_element( links.begin(), links.end(), []( const auto& a, const auto& b ) {
+                    return a.frameId < b.frameId;
+                } );
+                ImGui::Text( "Frame series %llu, frames %llu-%llu (%zu candidate links)%s",
+                    static_cast<unsigned long long>( capture.seriesId ),
+                    static_cast<unsigned long long>( ( *range.first ).frameId ),
+                    static_cast<unsigned long long>( ( *range.second ).frameId ), links.size(),
+                    relatedToHover ? " | hovered frame" : "" );
+            }
             ImGui::TextWrapped( "%s", capture.fileName.c_str() );
             if( !capture.error.empty() ) ImGui::TextWrapped( "PIX: %s", capture.error.c_str() );
             ImGui::PopID();
@@ -528,8 +573,6 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( m_livePid != 0 ) ImGui::Text( "Pipe backlog: %llu | Viewer drops: %llu",
         static_cast<unsigned long long>( m_liveBacklog ), static_cast<unsigned long long>( m_viewerDrops.load() ) );
     if( m_livePid != 0 ) ImGui::Text( "Bridge anchors received: %zu", m_liveLastAnchorCount );
-    const auto hoverFrameId = frameHover >= 0 && static_cast<size_t>( frameHover ) < m_frameIdByIndex.size()
-        ? m_frameIdByIndex[frameHover] : 0;
     if( m_hovered > 0 && m_hovered <= m_session.events.size() )
     {
         if( ImGui::Button( "Inspect hovered event" ) ) m_selected = m_hovered;
@@ -684,6 +727,34 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 zoom( found->begin - 1'000'000, std::max( found->end + 1'000'000, found->begin + 2'000'000 ) );
         }
         else ImGui::TextUnformatted( "No matching Tracy time in the current anchor range." );
+        if( event.source == tracyx::Source::PresentMon )
+        {
+            ImGui::SeparatorText( "Related PIX captures" );
+            bool anyCapture = false;
+            for( size_t index = 0; index < m_pixCaptures.size(); ++index )
+            {
+                const auto& capture = m_pixCaptures[index];
+                if( !capture.completed || capture.kind == tracyx::PixCaptureKind::Existing ) continue;
+                const auto qpcOverlap = capture.qpcBegin != 0 &&
+                    event.rawTimestamp >= capture.qpcBegin && event.rawTimestamp <= capture.qpcEnd;
+                const auto frameOverlap = found != m_aligned.end() &&
+                    std::any_of( found->frameLinks.begin(), found->frameLinks.end(), [&]( const auto& link ) {
+                        return std::any_of( m_pixLinks[index].begin(), m_pixLinks[index].end(), [&]( const auto& pixLink ) {
+                            return link.seriesId == pixLink.seriesId && link.frameId == pixLink.frameId;
+                        } );
+                    } );
+                if( !qpcOverlap && !frameOverlap ) continue;
+                anyCapture = true;
+                ImGui::PushID( static_cast<int>( index ) );
+                ImGui::Text( "%s | %s candidate | frame %llu", capture.fileName.c_str(),
+                    qpcOverlap ? "QPC overlap" : "Frame overlap",
+                    static_cast<unsigned long long>( capture.frameId ) );
+                ImGui::SameLine();
+                if( ImGui::Button( "Open related PIX" ) ) OpenPixCapture( index );
+                ImGui::PopID();
+            }
+            if( !anyCapture ) ImGui::TextUnformatted( "No capture overlaps this Present." );
+        }
     }
     ImGui::End();
 }

@@ -36,7 +36,7 @@ cmake --build build/profiler --config Debug
 
 `TracyXAgent` は `TRACYX_DX_TIMING_ROOT` を指定した場合のみビルドする。DxTimingCaptureLibrary の NuGet restore 後、Agility SDK Include が既定の NuGet キャッシュ以外にある場合は `TRACYX_D3D12_AGILITY_INCLUDE` を設定する。
 PIX NuGet が既定のキャッシュにある場合、Probe に PIX マーカーと DLL を自動追加する。別の場所なら `TRACYX_WINPIX_ROOT` を指定する。
-PIX Capture の対象は `TracyXProbePresentD3D12.exe 40 <session-directory> gpu` の第 3 引数で有効にする。`timing` も選べるが管理者権限が必要。GPU Capturer はデバイス作成前にロードするので、実行中プロセスへ後から切り替える場合は再起動が必要。Capture の手順と検証結果は [PIX Capture 検証記録](docs/M2-pix-capture.md) を参照。
+PIX Capture の対象は `TracyXProbePresentD3D12.exe 40 <session-directory> gpu` の第 3 引数で有効にする。`timing` も選べるが管理者権限が必要。第 4 引数で Capture 開始 Frame を指定できる。Tracy の記録開始後に PIX Capture を含めるには、例えば `600 <session-directory> gpu 300` を使う。GPU Capturer はデバイス作成前にロードするので、実行中プロセスへ後から切り替える場合は再起動が必要。Capture の手順と検証結果は [PIX Capture 検証記録](docs/M2-pix-capture.md) を参照。
 PresentMon SDK Service をインストールしている場合、`-DTRACYX_PRESENTMON_SDK_ROOT="C:/Program Files/Intel/PresentMon/SDK"` を CMake configure に追加する。`TracyXAgent` に PresentMon Frame Query を組み込み、`TracyXProbePresentMon` もビルドする。SDK がない構成でも Agent と Tracy は動作し、Viewer に PresentMon の利用不可理由を表示する。`TracyXProbePresentD3D12.exe 360 <session-directory>` は可視ウィンドウに 2 つの Swap Chain を表示する。非表示で起動すると表示結果の計測値が変わるため、可視状態で検証する。
 
 ## 計測手順
@@ -71,4 +71,4 @@ Tracy の Frame hover から DX イベントを強調し、DX Event Inspector �
 
 PresentMon 2.6.0 SDK Service を導入し、`TracyXProbePresentMon` と Agent で同じ D3D12 PID を同時追跡した。SDK の Open／Track／Stop／Close はすべて成功。300 Frame／900 Queue submit に対して外部イベント 6,012 件、QueueSubmit 900 件、GPU Command List 3,000 件、ETW buffer loss／Agent drop／Bridge 欠番／デコード失敗はいずれも 0 だった。Agent 単独では Capture State の追加後に 300 Frame で QueueSubmit 873 件、GPU Command List 2,910 件を得た。収集開始前の数フレームは欠ける。
 
-Issue #12 の PresentMon 実測は [M2 検証記録](docs/M2-presentmon-validation.md)、Issue #13 の PIX Capture 実測は [PIX Capture 検証記録](docs/M2-pix-capture.md) を参照。長時間・高負荷下の Viewer 応答性は未検証。
+Issue #12 の PresentMon 実測は [M2 検証記録](docs/M2-presentmon-validation.md)、Issue #13 の PIX Capture 実測は [PIX Capture 検証記録](docs/M2-pix-capture.md)、Issue #14 の同時動作は [共存検証記録](docs/M2-coexistence-validation.md) を参照。長時間・高負荷下の Viewer 応答性は未検証。

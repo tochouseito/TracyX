@@ -4,7 +4,7 @@
 
 `TracyXProbePresentD3D12.exe 40 <session-directory> gpu` を可視のデスクトップで実行する。引数を省略すると Capture は実行しない。`timing` を指定した場合は管理者権限が必要。PIX アプリ本体と NuGet `WinPixEventRuntime` が必要であり、NuGet の場所は CMake の `TRACYX_WINPIX_ROOT` で指定できる。
 
-GPU Capturer DLL は D3D12 デバイス作成前にロードする。起動済みアプリで後から GPU Capture を有効化する場合は再起動する。GPU Capture は最初の可視ウィンドウを対象にし、Frame 10 から最大 10 Frame を `PIXBeginCapture`／`PIXEndCapture` で記録する。Timing Capture は別の実行として起動し、GPU Capturer と同じプロセスで併用しない。保存先ディレクトリを先に作成し、PID と QPC を含む一意の `.wpix` 名を使う。
+GPU Capturer DLL は D3D12 デバイス作成前にロードする。起動済みアプリで後から GPU Capture を有効化する場合は再起動する。GPU Capture は最初の可視ウィンドウを対象にし、既定では Frame 10 から最大 10 Frame を `PIXBeginCapture`／`PIXEndCapture` で記録する。第 4 引数で開始 Frame を変更できる。Timing Capture は別の実行として起動し、GPU Capturer と同じプロセスで併用しない。保存先ディレクトリを先に作成し、PID と QPC を含む一意の `.wpix` 名を使う。
 
 結果は `pix-captures.jsonl` に追記する。各行には Capture 種類、Frame ID、QPC 区間、開始／終了 HRESULT、開始・完了状態、`.wpix` パス、失敗理由がある。Capture が使えない場合も理由を記録し、通常の FrameMark／Present 計測は続行する。Viewer の「PIX Captures」で一覧を表示し、「Refresh PIX index」で更新する。既存の `.wpix` は絶対パスを「Existing .wpix」に入力して「Attach」で追加できる。「Open in PIX」は Windows のファイル関連付けを使用し、ファイル欠損と関連付け失敗を表示する。
 

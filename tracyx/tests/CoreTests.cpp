@@ -134,6 +134,16 @@ int main()
     assert( pixLoaded[0].frameId == 42 );
     assert( pixLoaded.back().beginResult == 0x80070005 );
     assert( pixLoaded.back().error == pix.error );
+    assert( pixLoaded[0].seriesId == 0 );
+    const std::vector<FrameAnchorRecord> pixAnchors{
+        { 41, 900, 901, 0 }, { 42, 990, 995, 0 }, { 43, 1'500, 1'505, 0 },
+        { 44, 2'100, 2'105, 0 }, { 42, 1'100, 1'105, 1 }
+    };
+    const auto pixLinks = FindPixCaptureFrames( pixLoaded[0], pixAnchors );
+    assert( pixLinks.size() == 2 );
+    assert( pixLinks[0].frameId == 42 && pixLinks[0].strength == LinkStrength::Explicit );
+    assert( pixLinks[1].frameId == 43 && pixLinks[1].strength == LinkStrength::TimeOverlap );
+    assert( FindPixCaptureFrames( pixLoaded[1], pixAnchors ).empty() );
     std::ofstream( directory / "events.jsonl", std::ios::trunc ).close();
     assert( !LoadSession( directory, loaded, error ) );
     assert( error == "Event count mismatch" );
