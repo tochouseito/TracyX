@@ -220,6 +220,8 @@ void Panel::Load( const std::filesystem::path& directory )
     m_anchorCount = 0;
     m_selected = 0;
     m_seriesId = 0;
+    m_lastHoverFrameId = 0;
+    m_diagnosticReport = {};
 }
 
 void Panel::RefreshPixLinks()
@@ -450,6 +452,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( !m_loaded ) { ImGui::End(); return; }
     const auto hoverFrameId = frameHover >= 0 && static_cast<size_t>( frameHover ) < m_frameIdByIndex.size()
         ? m_frameIdByIndex[frameHover] : 0;
+    if( hoverFrameId != 0 ) m_lastHoverFrameId = hoverFrameId;
     if( ImGui::CollapsingHeader( "PIX Captures", ImGuiTreeNodeFlags_DefaultOpen ) )
     {
         ImGui::InputText( "Existing .wpix", m_pixPath.data(), m_pixPath.size() );
@@ -534,6 +537,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( !seriesIds.empty() && std::find( seriesIds.begin(), seriesIds.end(), m_seriesId ) == seriesIds.end() )
     {
         m_seriesId = seriesIds.front();
+        m_lastHoverFrameId = 0;
+        m_diagnosticReport = {};
         Align( worker, frames );
     }
     if( seriesIds.size() > 1 && ImGui::BeginCombo( "Frame series", std::to_string( m_seriesId ).c_str() ) )
@@ -544,6 +549,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             if( ImGui::Selectable( label.c_str(), seriesId == m_seriesId ) )
             {
                 m_seriesId = seriesId;
+                m_lastHoverFrameId = 0;
+                m_diagnosticReport = {};
                 Align( worker, frames );
             }
         }
@@ -578,6 +585,56 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         if( ImGui::Button( "Inspect hovered event" ) ) m_selected = m_hovered;
         ImGui::SameLine();
         ImGui::Text( "Event %llu", static_cast<unsigned long long>( m_session.events[m_hovered - 1].eventId ) );
+    }
+
+    if( m_lastHoverFrameId != 0 )
+    {
+        if( ImGui::Button( "Analyze last hovered frame" ) )
+            m_diagnosticReport = tracyx::AnalyzeFrameDiagnostics( m_session, m_seriesId, m_lastHoverFrameId );
+        ImGui::SameLine();
+        ImGui::Text( "Frame series %llu, frame %llu", static_cast<unsigned long long>( m_seriesId ),
+            static_cast<unsigned long long>( m_lastHoverFrameId ) );
+    }
+    if( m_diagnosticReport.frameId != 0 )
+    {
+        ImGui::SeparatorText( "Frame diagnostics" );
+        if( !m_diagnosticReport.hasFrameWindow )
+            ImGui::TextUnformatted( "No consecutive frame anchors; no cause assessment." );
+        else
+        {
+            ImGui::Text( "Observed frame interval: %.3f ms", ( m_diagnosticReport.endNs - m_diagnosticReport.beginNs ) / 1'000'000.0 );
+            if( m_diagnosticReport.degradedQuality )
+                ImGui::TextUnformatted( "Data loss, decode errors, missing anchors or clock residual reduce confidence." );
+            if( m_diagnosticReport.candidates.empty() )
+                ImGui::TextUnformatted( "No supported event overlaps this frame; cause unknown." );
+            for( const auto& candidate : m_diagnosticReport.candidates )
+            {
+                ImGui::PushID( static_cast<int>( candidate.evidenceEventId ) );
+                ImGui::Text( "Candidate: %s | overlap %.3f ms | uncertainty %llu ns",
+                    candidate.observation.c_str(), candidate.overlapNs / 1'000'000.0,
+                    static_cast<unsigned long long>( candidate.uncertaintyNs ) );
+                if( ImGui::Button( "Inspect evidence" ) )
+                {
+                    const auto evidence = std::find_if( m_session.events.begin(), m_session.events.end(), [&]( const auto& event ) {
+                        return event.eventId == candidate.evidenceEventId;
+                    } );
+                    if( evidence != m_session.events.end() ) m_selected = static_cast<size_t>( evidence - m_session.events.begin() ) + 1;
+                }
+                if( candidate.relatedEventId != 0 )
+                {
+                    ImGui::SameLine();
+                    if( ImGui::Button( "Inspect GPU work" ) )
+                    {
+                        const auto evidence = std::find_if( m_session.events.begin(), m_session.events.end(), [&]( const auto& event ) {
+                            return event.eventId == candidate.relatedEventId;
+                        } );
+                        if( evidence != m_session.events.end() ) m_selected = static_cast<size_t>( evidence - m_session.events.begin() ) + 1;
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::TextUnformatted( "Overlap is evidence of timing, not proof of the frame's delay cause." );
+        }
     }
 
     if( viewEnd > viewBegin && !m_aligned.empty() )

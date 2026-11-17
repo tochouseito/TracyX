@@ -8,6 +8,7 @@ endif()
 add_library(TracyXCore
     src/Clock.cpp
     src/Correlation.cpp
+    src/Diagnostics.cpp
     src/FrameBridge.cpp
     src/Session.cpp
 )

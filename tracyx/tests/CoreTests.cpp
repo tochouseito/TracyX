@@ -1,5 +1,6 @@
 #include "tracyx/Clock.hpp"
 #include "tracyx/Correlation.hpp"
+#include "tracyx/Diagnostics.hpp"
 #include "tracyx/FrameBridge.hpp"
 #include "tracyx/LiveProtocol.hpp"
 #include "tracyx/Session.hpp"
@@ -58,6 +59,37 @@ int main()
     event.frameLinks.clear();
     event.process.startTime100ns++;
     assert( frames.FindLinks( event ).empty() );
+
+    Session diagnosticSession;
+    diagnosticSession.manifest.process = process;
+    const auto diagnosticEvent = [&]( uint64_t id, EventKind kind, uint64_t begin, uint64_t end, uint64_t command ) {
+        Event item;
+        item.eventId = id;
+        item.kind = kind;
+        item.process = process;
+        item.normalizedNs = begin;
+        item.normalizedEndNs = end;
+        item.commandListId = command;
+        return item;
+    };
+    auto firstFrame = diagnosticEvent( 1, EventKind::FrameAnchor, 100, 101, 0 );
+    firstFrame.frameLinks = { { 1, LinkStrength::Explicit, 0 } };
+    auto nextFrame = diagnosticEvent( 2, EventKind::FrameAnchor, 200, 201, 0 );
+    nextFrame.frameLinks = { { 2, LinkStrength::Explicit, 0 } };
+    diagnosticSession.events = { firstFrame, nextFrame,
+        diagnosticEvent( 3, EventKind::PsoCompile, 120, 145, 0 ),
+        diagnosticEvent( 4, EventKind::Residency, 130, 140, 0 ),
+        diagnosticEvent( 5, EventKind::QueueSubmit, 110, 110, 7 ),
+        diagnosticEvent( 6, EventKind::GpuWork, 180, 190, 7 << 16 ) };
+    const auto diagnosis = AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 );
+    assert( diagnosis.hasFrameWindow && diagnosis.candidates.size() == 3 );
+    assert( diagnosis.candidates[0].kind == DiagnosticKind::QueueWait );
+    assert( diagnosis.candidates[0].evidenceEventId == 5 && diagnosis.candidates[0].relatedEventId == 6 );
+    assert( diagnosis.candidates[0].overlapNs == 70 );
+    diagnosticSession.manifest.queueDrops = 1;
+    assert( AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 ).degradedQuality );
+    diagnosticSession.events.erase( diagnosticSession.events.begin() + 1 );
+    assert( !AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 ).hasFrameWindow );
 
     const auto directory = std::filesystem::temp_directory_path() / "tracyx-core-test";
     std::filesystem::create_directories( directory );
