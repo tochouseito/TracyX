@@ -6,6 +6,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 add_library(TracyXCore
+    src/Comparison.cpp
     src/Clock.cpp
     src/Correlation.cpp
     src/Diagnostics.cpp

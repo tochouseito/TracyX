@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -418,6 +419,16 @@ int wmain( int argc, wchar_t** argv )
         maxEvents = static_cast<size_t>( parsed );
     }
     AgentState state( { static_cast<uint32_t>( pid ), started }, frequency.QuadPart, origin.QuadPart, maxEvents );
+    const auto condition = []( const char* name ) {
+        const auto value = std::getenv( name );
+        return value ? std::string( value ) : std::string();
+    };
+    state.session.manifest.buildSha = condition( "TRACYX_BUILD_SHA" );
+    state.session.manifest.environment = condition( "TRACYX_ENVIRONMENT" );
+    state.session.manifest.gpuName = condition( "TRACYX_GPU" );
+    state.session.manifest.driverVersion = condition( "TRACYX_DRIVER" );
+    state.session.manifest.scene = condition( "TRACYX_SCENE" );
+    state.session.manifest.captureMode = condition( "TRACYX_MODE" );
     activeAgent = &state;
     SetConsoleCtrlHandler( OnConsoleSignal, TRUE );
     const auto sessionDirectory = std::filesystem::path( argv[2] );

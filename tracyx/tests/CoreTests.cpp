@@ -1,11 +1,13 @@
 #include "tracyx/Clock.hpp"
 #include "tracyx/Correlation.hpp"
 #include "tracyx/Diagnostics.hpp"
+#include "tracyx/Comparison.hpp"
 #include "tracyx/FrameBridge.hpp"
 #include "tracyx/LiveProtocol.hpp"
 #include "tracyx/Session.hpp"
 
 #include <cassert>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -91,6 +93,46 @@ int main()
     diagnosticSession.events.erase( diagnosticSession.events.begin() + 1 );
     assert( !AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 ).hasFrameWindow );
 
+    Session before, after;
+    before.manifest.process = process;
+    after.manifest.process = process;
+    before.manifest.buildSha = "before";
+    after.manifest.buildSha = "after";
+    before.manifest.environment = after.manifest.environment = "Windows test";
+    before.manifest.gpuName = after.manifest.gpuName = "GPU A";
+    before.manifest.driverVersion = after.manifest.driverVersion = "1.0";
+    before.manifest.scene = after.manifest.scene = "repeatable scene";
+    before.manifest.captureMode = after.manifest.captureMode = "System";
+    for( uint64_t frame = 1; frame <= 101; ++frame )
+    {
+        auto anchor = diagnosticEvent( frame, EventKind::FrameAnchor, frame * 1'000'000, frame * 1'000'000, 0 );
+        anchor.frameLinks = { { frame, LinkStrength::Explicit, 0 } };
+        before.events.push_back( anchor );
+        anchor.normalizedNs = frame * 2'000'000;
+        after.events.push_back( anchor );
+        if( frame <= 100 )
+        {
+            auto present = diagnosticEvent( 200 + frame, EventKind::Present, 0, 0, 0 );
+            present.source = Source::PresentMon;
+            present.displayIntervalNs = frame * 1'000'000;
+            before.events.push_back( present );
+            present.displayIntervalNs = frame * 2'000'000;
+            after.events.push_back( present );
+            auto gpu = diagnosticEvent( 400 + frame, EventKind::GpuWork, 0, frame * 1'000'000, 0 );
+            before.events.push_back( gpu );
+            gpu.normalizedEndNs = frame * 2'000'000;
+            after.events.push_back( gpu );
+        }
+    }
+    const auto comparison = CompareSessions( before, after );
+    assert( comparison.frame.before.count == 100 && comparison.frame.after.p95Ns == 2'000'000 );
+    assert( comparison.present.before.p95Ns == 95'000'000 && comparison.present.after.p99Ns == 198'000'000 );
+    assert( comparison.gpuWork.p95ChangePercent == 100.0 );
+    assert( comparison.warnings.empty() );
+    after.manifest.captureMode = "Deep";
+    after.manifest.queueDrops = 1;
+    assert( CompareSessions( before, after ).warnings.size() == 2 );
+
     const auto directory = std::filesystem::temp_directory_path() / "tracyx-core-test";
     std::filesystem::create_directories( directory );
     Session saved;
@@ -100,6 +142,9 @@ int main()
     saved.manifest.presentMonState = 1;
     saved.manifest.presentMonFrames = 2;
     saved.manifest.presentMonDropped = 1;
+    saved.manifest.buildSha = "abc123";
+    saved.manifest.scene = "scene-one";
+    saved.manifest.captureMode = "System";
     std::ofstream( directory / "capture.tracy", std::ios::binary ).put( 'T' );
     event.process = process;
     event.label = "Queue \\\"A\\\"\\nGPU";
@@ -134,6 +179,8 @@ int main()
     assert( loaded.events.size() == 3 );
     assert( loaded.manifest.presentMonFrames == 2 );
     assert( loaded.manifest.presentMonDropped == 1 );
+    assert( loaded.manifest.buildSha == "abc123" && loaded.manifest.scene == "scene-one" );
+    assert( loaded.manifest.captureMode == "System" );
     assert( loaded.events[1].swapChainId == 0x1234 );
     assert( loaded.events[1].displayStatus == DisplayStatus::Displayed );
     assert( loaded.events[1].gpuBusyNs == 0 );

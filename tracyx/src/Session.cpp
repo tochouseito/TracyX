@@ -254,6 +254,12 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
         << ",\"present_mon_frames\":" << session.manifest.presentMonFrames
         << ",\"present_mon_dropped\":" << session.manifest.presentMonDropped
         << ",\"present_mon_error\":" << EscapeJson( session.manifest.presentMonError )
+        << ",\"build_sha\":" << EscapeJson( session.manifest.buildSha )
+        << ",\"environment\":" << EscapeJson( session.manifest.environment )
+        << ",\"gpu_name\":" << EscapeJson( session.manifest.gpuName )
+        << ",\"driver_version\":" << EscapeJson( session.manifest.driverVersion )
+        << ",\"scene\":" << EscapeJson( session.manifest.scene )
+        << ",\"capture_mode\":" << EscapeJson( session.manifest.captureMode )
         << ",\"event_count\":" << session.events.size()
         << ",\"tracy_file\":" << EscapeJson( session.manifest.tracyFile ) << "}\n";
 
@@ -342,6 +348,19 @@ bool LoadSession( const std::filesystem::path& directory, Session& session, std:
         !ReadNumber( line, "present_mon_dropped", loaded.manifest.presentMonDropped ) ) return false;
     if( Field( line, "present_mon_error" ) &&
         !ReadString( line, "present_mon_error", loaded.manifest.presentMonError ) ) return false;
+    const auto readCondition = [&]( const char* key, std::string& value ) {
+        return !Field( line, key ) || ReadString( line, key, value );
+    };
+    if( !readCondition( "build_sha", loaded.manifest.buildSha ) ||
+        !readCondition( "environment", loaded.manifest.environment ) ||
+        !readCondition( "gpu_name", loaded.manifest.gpuName ) ||
+        !readCondition( "driver_version", loaded.manifest.driverVersion ) ||
+        !readCondition( "scene", loaded.manifest.scene ) ||
+        !readCondition( "capture_mode", loaded.manifest.captureMode ) )
+    {
+        error = "Invalid comparison conditions";
+        return false;
+    }
     if( !loaded.manifest.tracyFile.empty() &&
         ( std::filesystem::path( loaded.manifest.tracyFile ).is_absolute() ||
           loaded.manifest.tracyFile.find( ".." ) != std::string::npos ||

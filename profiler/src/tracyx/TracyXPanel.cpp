@@ -222,6 +222,7 @@ void Panel::Load( const std::filesystem::path& directory )
     m_seriesId = 0;
     m_lastHoverFrameId = 0;
     m_diagnosticReport = {};
+    m_hasComparison = false;
 }
 
 void Panel::RefreshPixLinks()
@@ -450,6 +451,35 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( m_loaded && m_anchorCount == 0 && frames && worker.GetFrameCount( *frames ) >= 2 ) Align( worker, frames );
     ImGui::TextUnformatted( m_status.c_str() );
     if( !m_loaded ) { ImGui::End(); return; }
+    if( ImGui::CollapsingHeader( "Compare sessions" ) )
+    {
+        ImGui::InputText( "Before session directory", m_comparePath.data(), m_comparePath.size() );
+        ImGui::SameLine();
+        if( ImGui::Button( "Compare with current" ) )
+        {
+            tracyx::Session baseline;
+            m_hasComparison = tracyx::LoadSession( std::filesystem::u8path( m_comparePath.data() ), baseline, m_comparisonError );
+            if( m_hasComparison ) m_comparison = tracyx::CompareSessions( baseline, m_session );
+        }
+        if( !m_comparisonError.empty() ) ImGui::TextUnformatted( m_comparisonError.c_str() );
+        if( m_hasComparison )
+        {
+            const auto metric = []( const char* name, const tracyx::MetricComparison& values ) {
+                ImGui::Text( "%s | before n=%zu mean %.3f P50 %.3f P95 %.3f P99 %.3f ms",
+                    name, values.before.count, values.before.meanNs / 1'000'000.0,
+                    values.before.p50Ns / 1'000'000.0, values.before.p95Ns / 1'000'000.0,
+                    values.before.p99Ns / 1'000'000.0 );
+                ImGui::Text( "after n=%zu mean %.3f P50 %.3f P95 %.3f P99 %.3f ms | P95 %+0.1f%% P99 %+0.1f%%",
+                    values.after.count, values.after.meanNs / 1'000'000.0,
+                    values.after.p50Ns / 1'000'000.0, values.after.p95Ns / 1'000'000.0,
+                    values.after.p99Ns / 1'000'000.0, values.p95ChangePercent, values.p99ChangePercent );
+            };
+            metric( "Frame", m_comparison.frame );
+            metric( "Present interval", m_comparison.present );
+            metric( "GPU work duration", m_comparison.gpuWork );
+            for( const auto& warning : m_comparison.warnings ) ImGui::Text( "Caution: %s", warning.c_str() );
+        }
+    }
     const auto hoverFrameId = frameHover >= 0 && static_cast<size_t>( frameHover ) < m_frameIdByIndex.size()
         ? m_frameIdByIndex[frameHover] : 0;
     if( hoverFrameId != 0 ) m_lastHoverFrameId = hoverFrameId;
