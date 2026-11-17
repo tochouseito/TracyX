@@ -9,6 +9,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -521,19 +522,31 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 m_status = "Select an existing .wpix file";
             else
             {
-                const auto bytes = std::filesystem::absolute( file ).u8string();
-                tracyx::PixCaptureRecord capture;
-                capture.kind = tracyx::PixCaptureKind::Existing;
-                capture.fileName.assign( reinterpret_cast<const char*>( bytes.data() ), bytes.size() );
-                capture.completed = true;
-                std::string error;
-                if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
+                const auto name = "pix-existing-" + std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() ) + ".wpix";
+                const auto localFile = m_sessionDirectory / name;
+                if( !std::filesystem::copy_file( file, localFile, std::filesystem::copy_options::none, ec ) )
                 {
-                    m_pixCaptures.push_back( std::move( capture ) );
-                    RefreshPixLinks();
-                    m_status = "Existing PIX capture attached";
+                    m_status = "Cannot copy .wpix into the session: " + ec.message();
                 }
-                else m_status = error;
+                else
+                {
+                    tracyx::PixCaptureRecord capture;
+                    capture.kind = tracyx::PixCaptureKind::Existing;
+                    capture.fileName = name;
+                    capture.completed = true;
+                    std::string error;
+                    if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
+                    {
+                        m_pixCaptures.push_back( std::move( capture ) );
+                        RefreshPixLinks();
+                        m_status = "Existing PIX capture copied into the session";
+                    }
+                    else
+                    {
+                        std::filesystem::remove( localFile, ec );
+                        m_status = error;
+                    }
+                }
             }
         }
         ImGui::SameLine();

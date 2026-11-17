@@ -9,6 +9,7 @@
 | Core／保存形式 | Debug／Release `TracyXCoreTests` 各 1/1 成功。世代別イベントファイル、旧 `events.jsonl` の読込、イベント欠損・不正パス・不正 Live Batch の拒否、公開失敗時の旧セッション保持を確認。実際の 75,634 件の保存セッションも `LoadSession` で読めた。 |
 | Agent／対象の分離 | D3D12 Probe を途中で強制終了しても Agent は 1434 件を保存して終了コード 0。ETW 開始権限がない実行では `StartTraceW failed: 5` を表示して Agent のみ終了し、対象 Probe は継続。 |
 | 二重起動／不正入力 | 同じ PID の 2 個目の Agent は理由を表示して終了コード 3。最初の Agent と対象は終了コード 0。数字以外の PID、存在しない PID、不正なイベント上限を拒否。 |
+| ファイル境界 | `events_file` と `.tracy` はセッション内の通常ファイル名だけを許す。PIX index の `../outside.wpix` は書込・読込とも拒否する Core テストが成功。Viewer の Existing PIX 添付は選択ファイルをセッション内へコピーして相対名を記録する。 |
 | 実セッション／Live 再接続 | 3600 Frame の D3D12 Probe、Agent、Tracy Capture を同時実行。3 回の Pipe 接続・切断・再接続で magic／version が一致。対象・Agent・Capture はすべて終了コード 0。 |
 | Agent 再起動 | 3600 Frame の対象の実行中に 1 個目の Agent を強制停止し、残った ETW セッションを停止して 2 個目を起動。対象と 2 個目の Agent は終了コード 0、保存イベント 68,834 件、ETW loss／Agent drop 0。 |
 | データ整合性 | 上記セッションのイベント 75,634 件と JSONL 行数が一致し、イベント ID は厳密昇順。Frame anchor 3600 件、PresentMon frame 7168 件、Queue ID 5 種、Swap Chain ID 2 種。ETW loss、Agent drop、D3D12／DXGK decode error はすべて 0。 |

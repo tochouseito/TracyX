@@ -494,7 +494,7 @@ bool LoadFrameAnchors( const std::filesystem::path& file, std::vector<FrameAncho
 bool AppendPixCapture( const std::filesystem::path& file, const PixCaptureRecord& capture, std::string& error )
 {
     error.clear();
-    if( capture.fileName.empty() || capture.qpcEnd < capture.qpcBegin )
+    if( !SessionFileName( capture.fileName ) || capture.qpcEnd < capture.qpcBegin )
     {
         error = "Invalid PIX capture record";
         return false;
@@ -537,7 +537,7 @@ bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureR
             !ReadNumber( line, "end_result", endResult ) || endResult > UINT32_MAX ||
             !ReadNumber( line, "started", started ) || started > 1 ||
             !ReadNumber( line, "completed", completed ) || completed > 1 ||
-            !ReadString( line, "file_name", capture.fileName ) || capture.fileName.empty() ||
+            !ReadString( line, "file_name", capture.fileName ) || !SessionFileName( capture.fileName ) ||
             !ReadString( line, "error", capture.error ) )
         {
             error = "Invalid PIX capture record at line " + std::to_string( lineNumber );

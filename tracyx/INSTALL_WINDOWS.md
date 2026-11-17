@@ -62,3 +62,5 @@ pwsh -NoProfile -File tracyx/scripts/package_windows.ps1 -Configuration Release 
 ## セッション共有時の注意
 
 `.tracy`、イベント JSONL、PIX `.wpix` には、プロセス名・PID・スレッド名・ソースファイルパス・メモリアドレス・GPU 名・Scene 名などが入る場合がある。外部共有前に組織内のルールに従って確認する。パスだけを削ると Frame 対応や PIX の参照が壊れる場合があるため、共有用に複製したセッションで確認する。
+
+Viewer の「Existing .wpix」からファイルを添付すると、`.wpix` はセッション内にコピーされる。大きな Capture を添付する前に保存先の空き容量を確認する。以前の絶対パス参照を含む PIX index は境界検証で拒否されるため、元の `.wpix` を再度 Attach する。

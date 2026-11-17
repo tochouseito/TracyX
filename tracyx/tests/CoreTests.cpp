@@ -231,7 +231,7 @@ int main( int argc, char** argv )
     pix.qpcEnd = 2'000;
     pix.started = true;
     pix.completed = true;
-    pix.fileName = "GPU \\\"test\\\".wpix";
+    pix.fileName = "GPU test.wpix";
     std::ofstream( directory / "pix-captures.jsonl", std::ios::trunc ).close();
     assert( AppendPixCapture( directory / "pix-captures.jsonl", pix, error ) );
     pix.kind = PixCaptureKind::Timing;
@@ -246,6 +246,19 @@ int main( int argc, char** argv )
     assert( pixLoaded.back().beginResult == 0x80070005 );
     assert( pixLoaded.back().error == pix.error );
     assert( pixLoaded[0].seriesId == 0 );
+    auto outsideCapture = pix;
+    outsideCapture.fileName = "../outside.wpix";
+    assert( !AppendPixCapture( directory / "pix-captures.jsonl", outsideCapture, error ) );
+    std::ifstream pixInput( directory / "pix-captures.jsonl" );
+    std::string invalidPixLine;
+    assert( static_cast<bool>( std::getline( pixInput, invalidPixLine ) ) );
+    pixInput.close();
+    const auto pixName = invalidPixLine.find( "\"file_name\":" );
+    const auto pixError = invalidPixLine.find( ",\"error\":", pixName );
+    assert( pixName != std::string::npos && pixError != std::string::npos );
+    invalidPixLine.replace( pixName, pixError - pixName, "\"file_name\":\"../outside.wpix\"" );
+    { std::ofstream output( directory / "pix-captures.jsonl", std::ios::app ); output << invalidPixLine << '\n'; }
+    assert( !LoadPixCaptures( directory / "pix-captures.jsonl", pixLoaded, error ) );
     const std::vector<FrameAnchorRecord> pixAnchors{
         { 41, 900, 901, 0 }, { 42, 990, 995, 0 }, { 43, 1'500, 1'505, 0 },
         { 44, 2'100, 2'105, 0 }, { 42, 1'100, 1'105, 1 }
