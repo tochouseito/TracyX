@@ -51,6 +51,10 @@ const char* KindName( tracyx::EventKind kind )
     case tracyx::EventKind::Residency: return "Residency";
     case tracyx::EventKind::RuntimeError: return "Runtime error";
     case tracyx::EventKind::CustomCounter: return "Counter";
+    case tracyx::EventKind::StorageRead: return "Storage read";
+    case tracyx::EventKind::StorageSubmit: return "Storage submit";
+    case tracyx::EventKind::ResourceCreate: return "Resource create";
+    case tracyx::EventKind::ResourceDestroy: return "Resource destroy";
     default: return "Unknown";
     }
 }
@@ -220,6 +224,9 @@ void Panel::Load( const std::filesystem::path& directory )
     m_anchorCount = 0;
     m_selected = 0;
     m_seriesId = 0;
+    m_lastHoverFrameId = 0;
+    m_diagnosticReport = {};
+    m_hasComparison = false;
 }
 
 void Panel::RefreshPixLinks()
@@ -448,8 +455,38 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( m_loaded && m_anchorCount == 0 && frames && worker.GetFrameCount( *frames ) >= 2 ) Align( worker, frames );
     ImGui::TextUnformatted( m_status.c_str() );
     if( !m_loaded ) { ImGui::End(); return; }
+    if( ImGui::CollapsingHeader( "Compare sessions" ) )
+    {
+        ImGui::InputText( "Before session directory", m_comparePath.data(), m_comparePath.size() );
+        ImGui::SameLine();
+        if( ImGui::Button( "Compare with current" ) )
+        {
+            tracyx::Session baseline;
+            m_hasComparison = tracyx::LoadSession( std::filesystem::u8path( m_comparePath.data() ), baseline, m_comparisonError );
+            if( m_hasComparison ) m_comparison = tracyx::CompareSessions( baseline, m_session );
+        }
+        if( !m_comparisonError.empty() ) ImGui::TextUnformatted( m_comparisonError.c_str() );
+        if( m_hasComparison )
+        {
+            const auto metric = []( const char* name, const tracyx::MetricComparison& values ) {
+                ImGui::Text( "%s | before n=%zu mean %.3f P50 %.3f P95 %.3f P99 %.3f ms",
+                    name, values.before.count, values.before.meanNs / 1'000'000.0,
+                    values.before.p50Ns / 1'000'000.0, values.before.p95Ns / 1'000'000.0,
+                    values.before.p99Ns / 1'000'000.0 );
+                ImGui::Text( "after n=%zu mean %.3f P50 %.3f P95 %.3f P99 %.3f ms | P95 %+0.1f%% P99 %+0.1f%%",
+                    values.after.count, values.after.meanNs / 1'000'000.0,
+                    values.after.p50Ns / 1'000'000.0, values.after.p95Ns / 1'000'000.0,
+                    values.after.p99Ns / 1'000'000.0, values.p95ChangePercent, values.p99ChangePercent );
+            };
+            metric( "Frame", m_comparison.frame );
+            metric( "Present interval", m_comparison.present );
+            metric( "GPU work duration", m_comparison.gpuWork );
+            for( const auto& warning : m_comparison.warnings ) ImGui::Text( "Caution: %s", warning.c_str() );
+        }
+    }
     const auto hoverFrameId = frameHover >= 0 && static_cast<size_t>( frameHover ) < m_frameIdByIndex.size()
         ? m_frameIdByIndex[frameHover] : 0;
+    if( hoverFrameId != 0 ) m_lastHoverFrameId = hoverFrameId;
     if( ImGui::CollapsingHeader( "PIX Captures", ImGuiTreeNodeFlags_DefaultOpen ) )
     {
         ImGui::InputText( "Existing .wpix", m_pixPath.data(), m_pixPath.size() );
@@ -534,6 +571,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( !seriesIds.empty() && std::find( seriesIds.begin(), seriesIds.end(), m_seriesId ) == seriesIds.end() )
     {
         m_seriesId = seriesIds.front();
+        m_lastHoverFrameId = 0;
+        m_diagnosticReport = {};
         Align( worker, frames );
     }
     if( seriesIds.size() > 1 && ImGui::BeginCombo( "Frame series", std::to_string( m_seriesId ).c_str() ) )
@@ -544,6 +583,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             if( ImGui::Selectable( label.c_str(), seriesId == m_seriesId ) )
             {
                 m_seriesId = seriesId;
+                m_lastHoverFrameId = 0;
+                m_diagnosticReport = {};
                 Align( worker, frames );
             }
         }
@@ -580,25 +621,82 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
         ImGui::Text( "Event %llu", static_cast<unsigned long long>( m_session.events[m_hovered - 1].eventId ) );
     }
 
+    if( m_lastHoverFrameId != 0 )
+    {
+        if( ImGui::Button( "Analyze last hovered frame" ) )
+            m_diagnosticReport = tracyx::AnalyzeFrameDiagnostics( m_session, m_seriesId, m_lastHoverFrameId );
+        ImGui::SameLine();
+        ImGui::Text( "Frame series %llu, frame %llu", static_cast<unsigned long long>( m_seriesId ),
+            static_cast<unsigned long long>( m_lastHoverFrameId ) );
+    }
+    if( m_diagnosticReport.frameId != 0 )
+    {
+        ImGui::SeparatorText( "Frame diagnostics" );
+        if( !m_diagnosticReport.hasFrameWindow )
+            ImGui::TextUnformatted( "No consecutive frame anchors; no cause assessment." );
+        else
+        {
+            ImGui::Text( "Observed frame interval: %.3f ms", ( m_diagnosticReport.endNs - m_diagnosticReport.beginNs ) / 1'000'000.0 );
+            if( m_diagnosticReport.degradedQuality )
+                ImGui::TextUnformatted( "Data loss, decode errors, missing anchors or clock residual reduce confidence." );
+            if( m_diagnosticReport.candidates.empty() )
+                ImGui::TextUnformatted( "No supported event overlaps this frame; cause unknown." );
+            for( const auto& candidate : m_diagnosticReport.candidates )
+            {
+                ImGui::PushID( static_cast<int>( candidate.evidenceEventId ) );
+                ImGui::Text( "Candidate: %s | overlap %.3f ms | uncertainty %llu ns",
+                    candidate.observation.c_str(), candidate.overlapNs / 1'000'000.0,
+                    static_cast<unsigned long long>( candidate.uncertaintyNs ) );
+                if( ImGui::Button( "Inspect evidence" ) )
+                {
+                    const auto evidence = std::find_if( m_session.events.begin(), m_session.events.end(), [&]( const auto& event ) {
+                        return event.eventId == candidate.evidenceEventId;
+                    } );
+                    if( evidence != m_session.events.end() ) m_selected = static_cast<size_t>( evidence - m_session.events.begin() ) + 1;
+                }
+                if( candidate.relatedEventId != 0 )
+                {
+                    ImGui::SameLine();
+                    if( ImGui::Button( "Inspect GPU work" ) )
+                    {
+                        const auto evidence = std::find_if( m_session.events.begin(), m_session.events.end(), [&]( const auto& event ) {
+                            return event.eventId == candidate.relatedEventId;
+                        } );
+                        if( evidence != m_session.events.end() ) m_selected = static_cast<size_t>( evidence - m_session.events.begin() ) + 1;
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::TextUnformatted( "Overlap is evidence of timing, not proof of the frame's delay cause." );
+        }
+    }
+
     if( viewEnd > viewBegin && !m_aligned.empty() )
     {
         const auto width = std::max( 1.0f, ImGui::GetContentRegionAvail().x );
         constexpr float rowHeight = 22.0f;
         const auto first = m_aligned.begin();
         using Lane = std::tuple<uint8_t, uint64_t, uint64_t>;
+        const auto laneOf = []( const tracyx::Event& event ) -> Lane {
+            if( event.source == tracyx::Source::PresentMon ) return { 1, event.swapChainId, 0 };
+            if( event.kind == tracyx::EventKind::StorageRead || event.kind == tracyx::EventKind::StorageSubmit )
+                return { 2, event.queueId, 0 };
+            if( event.kind == tracyx::EventKind::ResourceCreate || event.kind == tracyx::EventKind::ResourceDestroy )
+                return { 3, event.resourceId, 0 };
+            return { 0, event.queueId, 0 };
+        };
         std::vector<Lane> lanes;
         for( auto it = first; it != m_aligned.end() && it->begin < viewEnd; ++it )
         {
             if( it->end < viewBegin ) continue;
             const auto& event = m_session.events[it->index];
-            const Lane lane = event.source == tracyx::Source::PresentMon
-                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
+            const Lane lane = laneOf( event );
             if( std::find( lanes.begin(), lanes.end(), lane ) == lanes.end() ) lanes.push_back( lane );
         }
         if( m_selected > 0 && m_selected <= m_session.events.size() )
         {
             const auto& selected = m_session.events[m_selected - 1];
-            if( selected.source != tracyx::Source::PresentMon && selected.commandListId != 0 )
+            if( std::get<0>( laneOf( selected ) ) == 0 && selected.commandListId != 0 )
                 lanes.push_back( { 0, selected.queueId, selected.commandListId } );
         }
         std::sort( lanes.begin(), lanes.end() );
@@ -617,6 +715,8 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             const auto top = origin.y + row * rowHeight;
             const auto [laneType, laneId, detailId] = lanes[row];
             const auto label = laneType == 1 ? "Present swap chain " + std::to_string( laneId )
+                : laneType == 2 ? "DirectStorage queue " + std::to_string( laneId )
+                : laneType == 3 ? "D3D12 resource " + std::to_string( laneId )
                 : detailId == 0 ? "DX queue " + std::to_string( laneId )
                 : "DX queue " + std::to_string( laneId ) + " / command list " + std::to_string( detailId );
             draw->AddText( { origin.x + 3, top + 2 }, IM_COL32( 220, 220, 220, 255 ),
@@ -629,8 +729,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             if( it->end < viewBegin ) continue;
             ++drawn;
             const auto& event = m_session.events[it->index];
-            const Lane lane = event.source == tracyx::Source::PresentMon
-                ? Lane{ 1, event.swapChainId, 0 } : Lane{ 0, event.queueId, 0 };
+            const Lane lane = laneOf( event );
             const auto rowIt = std::lower_bound( lanes.begin(), lanes.end(), lane );
             if( rowIt == lanes.end() || *rowIt != lane ) continue;
             const auto left = origin.x + static_cast<float>( std::clamp( ( it->begin - viewBegin ) / span, 0.0, 1.0 ) * width );

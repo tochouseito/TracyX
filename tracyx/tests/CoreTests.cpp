@@ -1,10 +1,13 @@
 #include "tracyx/Clock.hpp"
 #include "tracyx/Correlation.hpp"
+#include "tracyx/Diagnostics.hpp"
+#include "tracyx/Comparison.hpp"
 #include "tracyx/FrameBridge.hpp"
 #include "tracyx/LiveProtocol.hpp"
 #include "tracyx/Session.hpp"
 
 #include <cassert>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -59,6 +62,78 @@ int main()
     event.process.startTime100ns++;
     assert( frames.FindLinks( event ).empty() );
 
+    Session diagnosticSession;
+    diagnosticSession.manifest.process = process;
+    const auto diagnosticEvent = [&]( uint64_t id, EventKind kind, uint64_t begin, uint64_t end, uint64_t command ) {
+        Event item;
+        item.eventId = id;
+        item.kind = kind;
+        item.process = process;
+        item.normalizedNs = begin;
+        item.normalizedEndNs = end;
+        item.commandListId = command;
+        return item;
+    };
+    auto firstFrame = diagnosticEvent( 1, EventKind::FrameAnchor, 100, 101, 0 );
+    firstFrame.frameLinks = { { 1, LinkStrength::Explicit, 0 } };
+    auto nextFrame = diagnosticEvent( 2, EventKind::FrameAnchor, 200, 201, 0 );
+    nextFrame.frameLinks = { { 2, LinkStrength::Explicit, 0 } };
+    diagnosticSession.events = { firstFrame, nextFrame,
+        diagnosticEvent( 3, EventKind::PsoCompile, 120, 145, 0 ),
+        diagnosticEvent( 4, EventKind::Residency, 130, 140, 0 ),
+        diagnosticEvent( 5, EventKind::QueueSubmit, 110, 110, 7 ),
+        diagnosticEvent( 6, EventKind::GpuWork, 180, 190, 7 << 16 ) };
+    const auto diagnosis = AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 );
+    assert( diagnosis.hasFrameWindow && diagnosis.candidates.size() == 3 );
+    assert( diagnosis.candidates[0].kind == DiagnosticKind::QueueWait );
+    assert( diagnosis.candidates[0].evidenceEventId == 5 && diagnosis.candidates[0].relatedEventId == 6 );
+    assert( diagnosis.candidates[0].overlapNs == 70 );
+    diagnosticSession.manifest.queueDrops = 1;
+    assert( AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 ).degradedQuality );
+    diagnosticSession.events.erase( diagnosticSession.events.begin() + 1 );
+    assert( !AnalyzeFrameDiagnostics( diagnosticSession, 0, 1 ).hasFrameWindow );
+
+    Session before, after;
+    before.manifest.process = process;
+    after.manifest.process = process;
+    before.manifest.buildSha = "before";
+    after.manifest.buildSha = "after";
+    before.manifest.environment = after.manifest.environment = "Windows test";
+    before.manifest.gpuName = after.manifest.gpuName = "GPU A";
+    before.manifest.driverVersion = after.manifest.driverVersion = "1.0";
+    before.manifest.scene = after.manifest.scene = "repeatable scene";
+    before.manifest.captureMode = after.manifest.captureMode = "System";
+    for( uint64_t frame = 1; frame <= 101; ++frame )
+    {
+        auto anchor = diagnosticEvent( frame, EventKind::FrameAnchor, frame * 1'000'000, frame * 1'000'000, 0 );
+        anchor.frameLinks = { { frame, LinkStrength::Explicit, 0 } };
+        before.events.push_back( anchor );
+        anchor.normalizedNs = frame * 2'000'000;
+        after.events.push_back( anchor );
+        if( frame <= 100 )
+        {
+            auto present = diagnosticEvent( 200 + frame, EventKind::Present, 0, 0, 0 );
+            present.source = Source::PresentMon;
+            present.displayStatus = DisplayStatus::Displayed;
+            present.displayIntervalNs = frame * 1'000'000;
+            before.events.push_back( present );
+            present.displayIntervalNs = frame * 2'000'000;
+            after.events.push_back( present );
+            auto gpu = diagnosticEvent( 400 + frame, EventKind::GpuWork, 0, frame * 1'000'000, 1 );
+            before.events.push_back( gpu );
+            gpu.normalizedEndNs = frame * 2'000'000;
+            after.events.push_back( gpu );
+        }
+    }
+    const auto comparison = CompareSessions( before, after );
+    assert( comparison.frame.before.count == 100 && comparison.frame.after.p95Ns == 2'000'000 );
+    assert( comparison.present.before.p95Ns == 95'000'000 && comparison.present.after.p99Ns == 198'000'000 );
+    assert( comparison.gpuWork.p95ChangePercent == 100.0 );
+    assert( comparison.warnings.empty() );
+    after.manifest.captureMode = "Deep";
+    after.manifest.queueDrops = 1;
+    assert( CompareSessions( before, after ).warnings.size() == 2 );
+
     const auto directory = std::filesystem::temp_directory_path() / "tracyx-core-test";
     std::filesystem::create_directories( directory );
     Session saved;
@@ -68,6 +143,9 @@ int main()
     saved.manifest.presentMonState = 1;
     saved.manifest.presentMonFrames = 2;
     saved.manifest.presentMonDropped = 1;
+    saved.manifest.buildSha = "abc123";
+    saved.manifest.scene = "scene-one";
+    saved.manifest.captureMode = "System";
     std::ofstream( directory / "capture.tracy", std::ios::binary ).put( 'T' );
     event.process = process;
     event.label = "Queue \\\"A\\\"\\nGPU";
@@ -94,20 +172,35 @@ int main()
     dropped.displayLatencyNs.reset();
     dropped.label = "Present dropped";
     saved.events.push_back( dropped );
+    Event storage = event;
+    storage.kind = EventKind::StorageRead;
+    storage.queueId = 7;
+    storage.resourceId = 3;
+    storage.label = "DirectStorage read";
+    saved.events.push_back( storage );
+    Event resource = event;
+    resource.kind = EventKind::ResourceDestroy;
+    resource.resourceId = 99;
+    resource.label = "Resource destroy";
+    saved.events.push_back( resource );
     std::string error;
     assert( SaveSession( directory, saved, error ) );
     Session loaded;
     assert( LoadSession( directory, loaded, error ) );
     assert( loaded.manifest.process == process );
-    assert( loaded.events.size() == 3 );
+    assert( loaded.events.size() == 5 );
     assert( loaded.manifest.presentMonFrames == 2 );
     assert( loaded.manifest.presentMonDropped == 1 );
+    assert( loaded.manifest.buildSha == "abc123" && loaded.manifest.scene == "scene-one" );
+    assert( loaded.manifest.captureMode == "System" );
     assert( loaded.events[1].swapChainId == 0x1234 );
     assert( loaded.events[1].displayStatus == DisplayStatus::Displayed );
     assert( loaded.events[1].gpuBusyNs == 0 );
     assert( loaded.events[2].displayStatus == DisplayStatus::Dropped );
     assert( !loaded.events[2].rawEndTimestamp );
     assert( !loaded.events[2].displayIntervalNs );
+    assert( loaded.events[3].kind == EventKind::StorageRead && loaded.events[3].queueId == 7 );
+    assert( loaded.events[4].kind == EventKind::ResourceDestroy && loaded.events[4].resourceId == 99 );
     assert( loaded.events[0].label == event.label );
     assert( loaded.events[0].frameLinks.size() == 2 );
     assert( loaded.events[0].frameLinks[1].strength == LinkStrength::TimeOverlap );
@@ -186,7 +279,7 @@ int main()
     broken << "{\"version\":9}\n";
     broken.close();
     assert( !LoadSession( directory, loaded, error ) );
-    assert( error == "Invalid event at line 4" );
+    assert( error == "Invalid event at line 6" );
     std::filesystem::remove( directory / "capture.tracy" );
     std::ofstream( directory / "events.jsonl", std::ios::trunc );
     assert( !LoadSession( directory, loaded, error ) );

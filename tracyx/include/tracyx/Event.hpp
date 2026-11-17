@@ -35,7 +35,11 @@ enum class EventKind : uint8_t
     Residency,
     RuntimeError,
     CustomCounter,
-    Unknown
+    Unknown,
+    StorageRead,
+    StorageSubmit,
+    ResourceCreate,
+    ResourceDestroy
 };
 
 enum class LinkStrength : uint8_t

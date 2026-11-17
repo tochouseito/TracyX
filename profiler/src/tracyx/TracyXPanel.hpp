@@ -1,6 +1,8 @@
 #pragma once
 
 #include "tracyx/Session.hpp"
+#include "tracyx/Diagnostics.hpp"
+#include "tracyx/Comparison.hpp"
 #include "tracyx/LiveProtocol.hpp"
 
 #include <array>
@@ -51,9 +53,15 @@ private:
     const FrameData* m_lastFrames = nullptr;
     std::array<char, 1024> m_path{};
     std::array<char, 1024> m_pixPath{};
+    std::array<char, 1024> m_comparePath{};
     std::filesystem::path m_sessionDirectory;
     std::vector<tracyx::PixCaptureRecord> m_pixCaptures;
     std::vector<std::vector<tracyx::FrameLink>> m_pixLinks;
+    tracyx::FrameDiagnosticReport m_diagnosticReport;
+    tracyx::SessionComparison m_comparison;
+    bool m_hasComparison = false;
+    std::string m_comparisonError;
+    uint64_t m_lastHoverFrameId = 0;
     std::string m_traceFile;
     std::string m_status;
     size_t m_selected = 0;

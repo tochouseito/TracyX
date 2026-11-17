@@ -30,6 +30,12 @@ struct SessionManifest
     uint64_t presentMonDropped = 0;
     std::string presentMonError;
     std::string tracyFile;
+    std::string buildSha;
+    std::string environment;
+    std::string gpuName;
+    std::string driverVersion;
+    std::string scene;
+    std::string captureMode;
 };
 
 struct Session
