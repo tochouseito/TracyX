@@ -22,6 +22,7 @@
 #    define NOMINMAX
 #  endif
 #  include <Windows.h>
+#  include <shellapi.h>
 #endif
 
 namespace tracy::tracyx_viewer
@@ -205,8 +206,14 @@ void Panel::Load( const std::filesystem::path& directory )
         return;
     }
     m_session = std::move( loaded );
+    m_sessionDirectory = directory;
+    m_pixCaptures.clear();
+    std::string pixError;
+    if( std::filesystem::exists( directory / "pix-captures.jsonl" ) &&
+        !tracyx::LoadPixCaptures( directory / "pix-captures.jsonl", m_pixCaptures, pixError ) )
+        m_status = pixError;
+    else m_status = "Session loaded";
     m_loaded = true;
-    m_status = "Session loaded";
     m_aligned.clear();
     m_frameIdByIndex.clear();
     m_anchorCount = 0;
@@ -405,6 +412,72 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
     if( m_loaded && m_anchorCount == 0 && frames && worker.GetFrameCount( *frames ) >= 2 ) Align( worker, frames );
     ImGui::TextUnformatted( m_status.c_str() );
     if( !m_loaded ) { ImGui::End(); return; }
+    if( ImGui::CollapsingHeader( "PIX Captures", ImGuiTreeNodeFlags_DefaultOpen ) )
+    {
+        ImGui::InputText( "Existing .wpix", m_pixPath.data(), m_pixPath.size() );
+        ImGui::SameLine();
+        if( ImGui::Button( "Attach" ) )
+        {
+            const auto file = std::filesystem::u8path( m_pixPath.data() );
+            std::error_code ec;
+            if( file.extension() != L".wpix" || !std::filesystem::is_regular_file( file, ec ) )
+                m_status = "Select an existing .wpix file";
+            else
+            {
+                const auto bytes = std::filesystem::absolute( file ).u8string();
+                tracyx::PixCaptureRecord capture;
+                capture.kind = tracyx::PixCaptureKind::Existing;
+                capture.fileName.assign( reinterpret_cast<const char*>( bytes.data() ), bytes.size() );
+                capture.completed = true;
+                std::string error;
+                if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
+                {
+                    m_pixCaptures.push_back( std::move( capture ) );
+                    m_status = "Existing PIX capture attached";
+                }
+                else m_status = error;
+            }
+        }
+        ImGui::SameLine();
+        if( ImGui::Button( "Refresh PIX index" ) )
+        {
+            std::string error;
+            if( !tracyx::LoadPixCaptures( m_sessionDirectory / "pix-captures.jsonl", m_pixCaptures, error ) )
+                m_status = error;
+            else m_status = "PIX capture index refreshed";
+        }
+        for( size_t index = 0; index < m_pixCaptures.size(); ++index )
+        {
+            const auto& capture = m_pixCaptures[index];
+            const auto kind = capture.kind == tracyx::PixCaptureKind::Gpu ? "GPU" :
+                capture.kind == tracyx::PixCaptureKind::Timing ? "Timing" : "Existing";
+            const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
+            std::error_code ec;
+            const auto available = capture.completed && file.extension() == L".wpix" &&
+                std::filesystem::is_regular_file( file, ec );
+            ImGui::PushID( static_cast<int>( index ) );
+            ImGui::Text( "%s | frame %llu | QPC %llu - %llu | %s", kind,
+                static_cast<unsigned long long>( capture.frameId ),
+                static_cast<unsigned long long>( capture.qpcBegin ),
+                static_cast<unsigned long long>( capture.qpcEnd ), available ? "ready" : "unavailable" );
+            ImGui::SameLine();
+            ImGui::BeginDisabled( !available );
+            if( ImGui::Button( "Open in PIX" ) )
+            {
+#ifdef _WIN32
+                const auto result = reinterpret_cast<intptr_t>( ShellExecuteW( nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL ) );
+                m_status = result > 32 ? "Opening capture in PIX" :
+                    "Windows cannot open .wpix; install PIX or repair its file association (ShellExecute " + std::to_string( result ) + ")";
+#else
+                m_status = "Opening .wpix requires Windows";
+#endif
+            }
+            ImGui::EndDisabled();
+            ImGui::TextWrapped( "%s", capture.fileName.c_str() );
+            if( !capture.error.empty() ) ImGui::TextWrapped( "PIX: %s", capture.error.c_str() );
+            ImGui::PopID();
+        }
+    }
     std::vector<uint64_t> seriesIds;
     for( const auto& event : m_session.events )
     {

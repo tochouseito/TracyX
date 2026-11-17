@@ -370,6 +370,9 @@ target_sources(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Session.cpp
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tracyx/include)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32)
+endif()
 if(MSVC)
     set_source_files_properties(
         ${CMAKE_CURRENT_LIST_DIR}/src/tracyx/TracyXPanel.cpp

@@ -46,8 +46,31 @@ struct FrameAnchorRecord
     uint64_t seriesId = 0;
 };
 
+enum class PixCaptureKind : uint8_t
+{
+    Gpu,
+    Timing,
+    Existing
+};
+
+struct PixCaptureRecord
+{
+    PixCaptureKind kind = PixCaptureKind::Gpu;
+    uint64_t frameId = 0;
+    uint64_t qpcBegin = 0;
+    uint64_t qpcEnd = 0;
+    uint32_t beginResult = 0;
+    uint32_t endResult = 0;
+    bool started = false;
+    bool completed = false;
+    std::string fileName;
+    std::string error;
+};
+
 bool SaveSession( const std::filesystem::path& directory, const Session& session, std::string& error );
 bool LoadSession( const std::filesystem::path& directory, Session& session, std::string& error );
 bool LoadFrameAnchors( const std::filesystem::path& file, std::vector<FrameAnchorRecord>& anchors, std::string& error );
+bool AppendPixCapture( const std::filesystem::path& file, const PixCaptureRecord& capture, std::string& error );
+bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureRecord>& captures, std::string& error );
 
 } // namespace tracyx
