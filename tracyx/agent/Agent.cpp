@@ -58,6 +58,7 @@ struct AgentState
     tracyx::QpcClock qpcClock;
     uint64_t originNs = 0;
     size_t maxEvents = 1'000'000;
+    size_t firstEventIndex = 0;
     std::atomic<bool> running{ true };
     std::atomic<uint64_t> nextEventId{ 1 };
     std::atomic<uint64_t> lostEvents{ 0 };
@@ -109,8 +110,10 @@ struct AgentState
         std::lock_guard lock( eventMutex );
         if( session.events.size() >= maxEvents )
         {
-            queueDrops.fetch_add( 1 );
-            return;
+            const auto retire = std::min( session.events.size(), std::max<size_t>( 1, maxEvents / 8 ) );
+            session.events.erase( session.events.begin(), session.events.begin() + retire );
+            firstEventIndex += retire;
+            queueDrops.fetch_add( retire );
         }
         session.events.push_back( std::move( event ) );
     }
@@ -255,6 +258,34 @@ public:
         event.threadId = submit.EnqueueThreadId;
         event.queueId = submit.QueueId;
         event.label = submit.AutoSubmitted ? "DirectStorage auto submit" : "DirectStorage submit";
+        m_state.Push( std::move( event ) );
+        return S_OK;
+    }
+
+private:
+    AgentState& m_state;
+};
+
+class ResidencyCallbacks final : public NoOpResidencyEventCallbacks
+{
+public:
+    explicit ResidencyCallbacks( AgentState& state ) : m_state( state ) {}
+
+    HRESULT OnResidencyOperation( const ResidencyOperation* operation ) override
+    {
+        if( !operation || operation->Timestamp < 0 ) return S_OK;
+        tracyx::Event event;
+        event.kind = tracyx::EventKind::Residency;
+        event.rawTimestamp = static_cast<uint64_t>( operation->Timestamp );
+        event.process = m_state.session.manifest.process;
+        event.resourceId = operation->ObjectId;
+        switch( operation->OperationType )
+        {
+        case ResidencyOperationType::MakeResident: event.label = "Make resident"; break;
+        case ResidencyOperationType::Evict: event.label = "Evict"; break;
+        case ResidencyOperationType::PageIn: event.label = "Page in"; break;
+        case ResidencyOperationType::PageOut: event.label = "Page out"; break;
+        }
         m_state.Push( std::move( event ) );
         return S_OK;
     }
@@ -433,9 +464,11 @@ void ReadDred( AgentState& state, const std::filesystem::path& file )
     event.kind = tracyx::EventKind::RuntimeError;
     event.rawTimestamp = qpc;
     event.process = state.session.manifest.process;
-    event.resourceId = address;
-    event.label = "DRED device removed HRESULT " + std::to_string( reason ) +
-        ", breadcrumb nodes " + std::to_string( breadcrumbs );
+    char label[160]{};
+    std::snprintf( label, sizeof( label ), "DRED HRESULT 0x%08llx, page-fault VA 0x%llx, breadcrumb nodes %llu",
+        static_cast<unsigned long long>( reason ), static_cast<unsigned long long>( address ),
+        static_cast<unsigned long long>( breadcrumbs ) );
+    event.label = label;
     state.Push( std::move( event ) );
 }
 
@@ -480,10 +513,13 @@ void StreamBatches( AgentState& state )
             }
             {
                 std::lock_guard lock( state.eventMutex );
+                next = std::max( next, state.firstEventIndex );
+                const auto relative = next - state.firstEventIndex;
                 batch.count = static_cast<uint32_t>( std::min<size_t>( tracyx::LiveBatchCapacity,
-                    state.session.events.size() - std::min( next, state.session.events.size() ) ) );
-                for( uint32_t i = 0; i < batch.count; ++i ) batch.events[i] = tracyx::ToWire( state.session.events[next + i] );
-                batch.backlog = state.session.events.size() - next - batch.count;
+                    state.session.events.size() - relative ) );
+                for( uint32_t i = 0; i < batch.count; ++i )
+                    batch.events[i] = tracyx::ToWire( state.session.events[relative + i] );
+                batch.backlog = state.session.events.size() - relative - batch.count;
             }
             DWORD written = 0;
             if( !WriteFile( pipe, &batch, sizeof( batch ), &written, nullptr ) || written != sizeof( batch ) ) break;
@@ -561,6 +597,7 @@ int wmain( int argc, wchar_t** argv )
     EngineActivityCallbacks engineActivity( state );
     StorageCallbacks storage( state );
     ResourceCallbacks resources( state );
+    ResidencyCallbacks residency( state );
     NoOpDxgkObjectCallbacks dxgk;
     DiagnosticCallbacks diagnostics( state );
     DxTimingCaptureEventCallbacks callbacks{};
@@ -570,6 +607,7 @@ int wmain( int argc, wchar_t** argv )
     callbacks.GpuEngineActivityCallbacks = &engineActivity;
     callbacks.DirectStorageCallbacks = &storage;
     callbacks.ApiObjectCallbacks = &resources;
+    callbacks.ResidencyEventCallbacks = &residency;
     callbacks.DiagnosticsSink = &diagnostics;
     DxTimingCaptureLibraryOptions options{};
     options.TrackGpuTiming = true;
@@ -606,7 +644,8 @@ int wmain( int argc, wchar_t** argv )
         ControlTraceW( session, name.c_str(), &properties.properties, EVENT_TRACE_CONTROL_STOP );
         return 1;
     }
-    const auto storageStatus = EnableProvider( session, DirectStorage::DStorageEtwProvider, ~0ULL, TRACE_LEVEL_VERBOSE );
+    const auto storageStatus = EnableTraceEx2( session, &DirectStorage::DStorageEtwProvider,
+        EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_VERBOSE, ~0ULL, 0, 5000, nullptr );
     if( storageStatus != ERROR_SUCCESS )
         std::fprintf( stderr, "DirectStorage ETW unavailable (Win32 %lu).\n", storageStatus );
 

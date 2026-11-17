@@ -118,7 +118,7 @@ int main()
             before.events.push_back( present );
             present.displayIntervalNs = frame * 2'000'000;
             after.events.push_back( present );
-            auto gpu = diagnosticEvent( 400 + frame, EventKind::GpuWork, 0, frame * 1'000'000, 0 );
+            auto gpu = diagnosticEvent( 400 + frame, EventKind::GpuWork, 0, frame * 1'000'000, 1 );
             before.events.push_back( gpu );
             gpu.normalizedEndNs = frame * 2'000'000;
             after.events.push_back( gpu );

@@ -7,12 +7,22 @@ on:
       - codex/issue-12-presentmon-metrics
       - codex/issue-13-pix-capture
       - codex/issue-14-coexistence
+      - codex/issue-15-diagnostics
+      - codex/issue-16-memory
+      - codex/issue-17-comparison
+      - codex/issue-18-advanced-lanes
+      - codex/issue-19-stability
   pull_request:
     branches:
       - master
       - codex/m0-m1-integrated-profiler
       - codex/issue-12-presentmon-metrics
       - codex/issue-13-pix-capture
+      - codex/issue-14-coexistence
+      - codex/issue-15-diagnostics
+      - codex/issue-16-memory
+      - codex/issue-17-comparison
+      - codex/issue-18-advanced-lanes
   workflow_dispatch:
 
 permissions:
