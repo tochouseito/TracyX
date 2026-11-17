@@ -42,6 +42,12 @@ jobs:
           git clone https://github.com/microsoft/DxTimingCaptureLibrary.git $root
           git -C $root checkout 72bd2b18553493aa9850e434caf71bfa18952aac
           msbuild (Join-Path $root 'DxTimingCaptureLibrary.sln') /restore /p:Configuration=Debug /p:Platform=x64 /m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $library = Join-Path $root 'x64/Debug/lib/DxTimingCaptureLibrary.lib'
+          if (-not (Test-Path -LiteralPath $library)) { throw "DxTimingCaptureLibrary.lib was not found at $library" }
+          $target = Join-Path $root 'lib/x64/Debug/lib'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item -LiteralPath $library -Destination $target
           "TRACYX_DX_TIMING_ROOT=$root" >> $env:GITHUB_ENV
       - name: Extract pinned PresentMon SDK
         if: ${{ hashFiles('tracyx/agent/PresentMonAdapter.cpp') != '' }}
@@ -50,8 +56,8 @@ jobs:
           $msi = Join-Path $env:RUNNER_TEMP 'PresentMon-2.6.0.msi'
           $root = Join-Path $env:RUNNER_TEMP 'PresentMonSDK'
           Invoke-WebRequest 'https://github.com/GameTechDev/PresentMon/releases/download/v2.6.0/PresentMon-2.6.0.msi' -OutFile $msi
-          & msiexec.exe /a $msi /qn "TARGETDIR=$root"
-          if ($LASTEXITCODE -ne 0) { throw "PresentMon MSI extraction failed: $LASTEXITCODE" }
+          $installer = Start-Process -FilePath msiexec.exe -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$root`"") -Wait -PassThru -WindowStyle Hidden
+          if ($installer.ExitCode -ne 0) { throw "PresentMon MSI extraction failed: $($installer.ExitCode)" }
           $header = Get-ChildItem -LiteralPath $root -Recurse -Filter PresentMonAPI.h | Select-Object -First 1
           if (-not $header) { throw 'PresentMonAPI.h was not found in the extracted MSI' }
           $sdk = $header.DirectoryName
