@@ -23,6 +23,6 @@ Deep の PIX Capture は QPC 区間で Frame 300～310 の 11 アンカーと重
 
 ## 権限と残る確認
 
-ETW Session の開始には Windows の権限が必要であり、権限不足は Agent の `StartTraceW`／`EnableTraceEx2` エラーで判別する。PIX Timing Capture は管理者権限が必要で、非管理者の失敗理由の記録まで確認した。管理者としての Timing Capture 成功は未確認。Deep 実行の DxTimingCaptureLibrary は Pipeline State Compilation Event の API Object ID がない旨の診断を 1 件 stderr に出したが、記録された decode error と loss は 0 だった。この診断の影響は追加調査が必要。
+ETW Session の開始には Windows の権限が必要であり、権限不足は Agent の `StartTraceW`／`EnableTraceEx2` エラーで判別する。PIX Timing Capture は管理者権限が必要で、非管理者の失敗理由の記録と管理者実行での成功を確認した。管理者での 600 Frame 実行では Probe、Agent、Tracy Capture が終了コード 0、外部イベント 12,621 件、PresentMon Frame 1,167 件、ETW loss／Agent drop／Bridge 欠番／D3D12・DXGK decode error はすべて 0 だった。Frame 300 の Timing `.wpix` は PIX 2603.25 の Timeline で開けた。Deep 実行の DxTimingCaptureLibrary は Pipeline State Compilation Event の API Object ID がない旨の診断を 1 件 stderr に出したが、記録された decode error と loss は 0 だった。この診断の影響は追加調査が必要。
 
-本記録は短い Probe 実行の結果であり、長時間・高負荷のオーバーヘッドと PIX Timing Capture の同時使用を保証しない。PIX `.wpix` は PIX GUI で開けたが、TracyX Viewer の「Open in PIX」ボタンからの起動は再現できず、ファイル関連付けの起動経路を調査中。
+本記録は短い Probe 実行の結果であり、長時間・高負荷のオーバーヘッドを保証しない。TracyX Viewer の「Open in PIX」から Timing `.wpix` を起動でき、Frame 300～310 の候補リンクと PIX Timeline を確認した。GPU Capture と Timing Capture は別々の対象実行で検証した。
