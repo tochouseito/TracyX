@@ -1,6 +1,9 @@
 name: TracyX Windows package
 
 on:
+  push:
+    branches:
+      - codex/issue-20-agent-recovery
   workflow_dispatch:
     inputs:
       version:
@@ -15,7 +18,7 @@ permissions:
 
 jobs:
   windows-package:
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'tracyx-v') }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'tracyx-v') }}
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +90,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          $version = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_VERSION } else { $env:RELEASE_TAG.Substring(8) }
+          $version = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_VERSION } elseif ($env:GITHUB_EVENT_NAME -eq 'push') { '1.0.0' } else { $env:RELEASE_TAG.Substring(8) }
           pwsh -NoProfile -File tracyx/scripts/package_windows.ps1 -Configuration Release -Version $version `
             -AgentBuildDir build/tracyx-release -ViewerBuildDir build/profiler-release `
             -CaptureBuildDir build/capture-release -DxTimingRoot $env:TRACYX_DX_TIMING_ROOT `
