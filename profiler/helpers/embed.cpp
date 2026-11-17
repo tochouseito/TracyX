@@ -86,6 +86,7 @@ int main( int argc, char** argv )
     for( size_t i=0; i<lz4sz; i++ )
     {
         fprintf( cpp, "%d,", lz4data[i] );
+        if( i % 64 == 63 ) fputc( '\n', cpp );
     }
     fprintf( cpp, "};\n" );
     fprintf( cpp, "}\n" );

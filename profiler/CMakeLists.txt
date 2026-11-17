@@ -363,6 +363,22 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     nlohmann_json::nlohmann_json
     md4c
 )
+target_sources(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src/tracyx/TracyXPanel.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Clock.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Correlation.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Session.cpp
+)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tracyx/include)
+if(MSVC)
+    set_source_files_properties(
+        ${CMAKE_CURRENT_LIST_DIR}/src/tracyx/TracyXPanel.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Clock.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Correlation.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/../tracyx/src/Session.cpp
+        PROPERTIES COMPILE_OPTIONS /utf-8
+    )
+endif()
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${tidy_SOURCE_DIR}/include
 )

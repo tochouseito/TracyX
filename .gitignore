@@ -31,3 +31,6 @@ compile_commands.json
 examples/ToyPathTracer/Windows/TestCpu
 examples/ToyPathTracer/Windows/x64
 *.user
+/build/
+/.serena/
+/frame-anchors.jsonl
