@@ -38,13 +38,34 @@ if(WIN32 AND TRACYX_BUILD_PROBES)
     target_link_libraries(TracyXProbeD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi)
     add_executable(TracyXProbePresentD3D12 probes/PresentD3D12Probe.cpp)
     target_link_libraries(TracyXProbePresentD3D12 PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi advapi32)
+    option(TRACYX_BUILD_DIRECTSTORAGE_PROBE "Build optional DirectStorage and DRED validation probe" OFF)
+    set(TRACYX_DIRECTSTORAGE_ROOT "" CACHE PATH "DirectStorage 1.3.0 NuGet native directory")
+    if(TRACYX_BUILD_DIRECTSTORAGE_PROBE)
+        foreach(file include/dstorage.h lib/x64/dstorage.lib bin/x64/dstorage.dll bin/x64/dstoragecore.dll)
+            if(NOT EXISTS "${TRACYX_DIRECTSTORAGE_ROOT}/${file}")
+                message(FATAL_ERROR "DirectStorage SDK file is missing: ${TRACYX_DIRECTSTORAGE_ROOT}/${file}")
+            endif()
+        endforeach()
+        add_executable(TracyXProbeDirectStorage probes/DirectStorageValidationProbe.cpp)
+        target_include_directories(TracyXProbeDirectStorage PRIVATE "${TRACYX_DIRECTSTORAGE_ROOT}/include")
+        target_compile_definitions(TracyXProbeDirectStorage PRIVATE UNICODE _UNICODE NOMINMAX)
+        target_link_libraries(TracyXProbeDirectStorage PRIVATE TracyXProbeClient TracyXCore d3d12 dxgi
+            "${TRACYX_DIRECTSTORAGE_ROOT}/lib/x64/dstorage.lib")
+        add_custom_command(TARGET TracyXProbeDirectStorage POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${TRACYX_DIRECTSTORAGE_ROOT}/bin/x64/dstorage.dll"
+                "$<TARGET_FILE_DIR:TracyXProbeDirectStorage>/dstorage.dll"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${TRACYX_DIRECTSTORAGE_ROOT}/bin/x64/dstoragecore.dll"
+                "$<TARGET_FILE_DIR:TracyXProbeDirectStorage>/dstoragecore.dll")
+    endif()
     set(TRACYX_WINPIX_ROOT "$ENV{USERPROFILE}/.nuget/packages/winpixeventruntime/1.0.240308001" CACHE PATH "Optional WinPixEventRuntime NuGet package")
     if(EXISTS "${TRACYX_WINPIX_ROOT}/Include/WinPixEventRuntime/pix3.h" AND
        EXISTS "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
         foreach(probe TracyXProbeD3D12 TracyXProbePresentD3D12)
             target_include_directories(${probe} PRIVATE "${TRACYX_WINPIX_ROOT}/Include")
             target_link_libraries(${probe} PRIVATE "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.lib")
-            target_compile_definitions(${probe} PRIVATE TRACYX_HAS_PIX)
+            target_compile_definitions(${probe} PRIVATE TRACYX_HAS_PIX USE_PIX)
             add_custom_command(TARGET ${probe} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${TRACYX_WINPIX_ROOT}/bin/x64/WinPixEventRuntime.dll"
