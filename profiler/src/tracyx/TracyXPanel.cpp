@@ -9,6 +9,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -103,15 +104,28 @@ void Panel::StartLive( uint32_t pid )
     m_liveRunning.store( true );
     m_liveThread = std::thread( [this, pid]() {
         const auto name = std::wstring( L"\\\\.\\pipe\\TracyX." ) + std::to_wstring( pid );
+        const auto recordError = [this]( std::string message ) {
+            std::lock_guard lock( m_liveMutex );
+            m_liveError = std::move( message );
+        };
         while( m_liveRunning.load() )
         {
             if( !WaitNamedPipeW( name.c_str(), 500 ) )
             {
+                const auto error = GetLastError();
+                if( error == ERROR_ACCESS_DENIED ) recordError( "Live Agent pipe access denied; use the target's logon session" );
+                else recordError( "Live Agent pipe unavailable (Win32 " + std::to_string( error ) + ")" );
                 std::this_thread::sleep_for( std::chrono::milliseconds( 250 ) );
                 continue;
             }
             const auto pipe = CreateFileW( name.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr );
-            if( pipe == INVALID_HANDLE_VALUE ) continue;
+            if( pipe == INVALID_HANDLE_VALUE )
+            {
+                const auto error = GetLastError();
+                if( error == ERROR_ACCESS_DENIED ) recordError( "Live Agent pipe access denied; use the target's logon session" );
+                else recordError( "Cannot connect to Live Agent pipe (Win32 " + std::to_string( error ) + ")" );
+                continue;
+            }
             while( m_liveRunning.load() )
             {
                 tracyx::WireBatch batch;
@@ -123,10 +137,15 @@ void Panel::StartLive( uint32_t pid )
                     if( !ReadFile( pipe, bytes + total, static_cast<DWORD>( sizeof( batch ) - total ), &read, nullptr ) || read == 0 ) break;
                     total += read;
                 }
-                if( total != sizeof( batch ) || batch.magic != tracyx::LiveMagic ||
-                    batch.version != tracyx::LiveVersion || batch.count > tracyx::LiveBatchCapacity || batch.processId != pid ) break;
+                if( total != sizeof( batch ) ) break;
+                if( !tracyx::ValidWireBatch( batch, pid ) )
+                {
+                    recordError( "Live Agent sent an invalid or incompatible batch" );
+                    break;
+                }
                 m_liveDisconnected.store( false );
                 std::lock_guard lock( m_liveMutex );
+                m_liveError.clear();
                 if( m_liveQueue.size() >= 64 ) { m_viewerDrops += batch.count; continue; }
                 m_liveQueue.push_back( std::move( batch ) );
             }
@@ -142,9 +161,11 @@ void Panel::StartLive( uint32_t pid )
 void Panel::PollLive( Worker& worker, const FrameData* frames )
 {
     std::deque<tracyx::WireBatch> pending;
+    std::string liveError;
     {
         std::lock_guard lock( m_liveMutex );
         pending.swap( m_liveQueue );
+        liveError = m_liveError;
     }
     for( const auto& batch : pending )
     {
@@ -189,7 +210,9 @@ void Panel::PollLive( Worker& worker, const FrameData* frames )
         m_lastAlignment = now;
     }
     else if( !pending.empty() && m_anchorCount < 2 ) m_status = "Live Agent connected; waiting for FrameMark anchors";
-    if( pending.empty() && m_liveDisconnected.load() && m_loaded ) m_status = "Live Agent disconnected; saved session may be available";
+    if( !liveError.empty() ) m_status = liveError;
+    else if( pending.empty() && m_liveDisconnected.load() && m_loaded )
+        m_status = "Live Agent disconnected; saved session may be available";
 }
 
 void Panel::Load( const std::filesystem::path& directory )
@@ -250,7 +273,8 @@ void Panel::OpenPixCapture( size_t index )
     const auto& capture = m_pixCaptures[index];
     const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
     std::error_code ec;
-    if( !capture.completed || file.extension() != L".wpix" || !std::filesystem::is_regular_file( file, ec ) )
+    if( !capture.completed || file.extension() != L".wpix" ||
+        !std::filesystem::is_regular_file( std::filesystem::symlink_status( file, ec ) ) )
     {
         m_status = "The selected .wpix file is unavailable";
         return;
@@ -499,19 +523,31 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
                 m_status = "Select an existing .wpix file";
             else
             {
-                const auto bytes = std::filesystem::absolute( file ).u8string();
-                tracyx::PixCaptureRecord capture;
-                capture.kind = tracyx::PixCaptureKind::Existing;
-                capture.fileName.assign( reinterpret_cast<const char*>( bytes.data() ), bytes.size() );
-                capture.completed = true;
-                std::string error;
-                if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
+                const auto name = "pix-existing-" + std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() ) + ".wpix";
+                const auto localFile = m_sessionDirectory / name;
+                if( !std::filesystem::copy_file( file, localFile, std::filesystem::copy_options::none, ec ) )
                 {
-                    m_pixCaptures.push_back( std::move( capture ) );
-                    RefreshPixLinks();
-                    m_status = "Existing PIX capture attached";
+                    m_status = "Cannot copy .wpix into the session: " + ec.message();
                 }
-                else m_status = error;
+                else
+                {
+                    tracyx::PixCaptureRecord capture;
+                    capture.kind = tracyx::PixCaptureKind::Existing;
+                    capture.fileName = name;
+                    capture.completed = true;
+                    std::string error;
+                    if( tracyx::AppendPixCapture( m_sessionDirectory / "pix-captures.jsonl", capture, error ) )
+                    {
+                        m_pixCaptures.push_back( std::move( capture ) );
+                        RefreshPixLinks();
+                        m_status = "Existing PIX capture copied into the session";
+                    }
+                    else
+                    {
+                        std::filesystem::remove( localFile, ec );
+                        m_status = error;
+                    }
+                }
             }
         }
         ImGui::SameLine();
@@ -530,7 +566,7 @@ void Panel::Draw( const std::string& traceFile, Worker& worker, const FrameData*
             const auto file = m_sessionDirectory / std::filesystem::u8path( capture.fileName );
             std::error_code ec;
             const auto available = capture.completed && file.extension() == L".wpix" &&
-                std::filesystem::is_regular_file( file, ec );
+                std::filesystem::is_regular_file( std::filesystem::symlink_status( file, ec ) );
             const auto& links = m_pixLinks[index];
             const auto relatedToHover = hoverFrameId != 0 && std::any_of( links.begin(), links.end(), [&]( const auto& link ) {
                 return link.seriesId == m_seriesId && link.frameId == hoverFrameId;

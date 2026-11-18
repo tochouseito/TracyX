@@ -1,6 +1,9 @@
 #include "tracyx/Session.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <charconv>
+#include <chrono>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -10,6 +13,29 @@ namespace tracyx
 {
 namespace
 {
+
+bool SessionFileName( const std::string& name )
+{
+    return !name.empty() && name != "." && name != ".." &&
+        name.find_first_of( "/\\" ) == std::string::npos &&
+        name.find( ':' ) == std::string::npos &&
+        std::all_of( name.begin(), name.end(), []( unsigned char ch ) { return ch >= 0x20 && ch != 0x7f; } );
+}
+
+bool SessionRegularFile( const std::filesystem::path& directory, const std::string& name )
+{
+    if( !SessionFileName( name ) ) return false;
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status( directory / name, ec );
+    return !ec && std::filesystem::is_regular_file( status );
+}
+
+std::string GenerationName()
+{
+    static std::atomic<uint64_t> next{ 0 };
+    return std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() ) +
+        "-" + std::to_string( next.fetch_add( 1 ) );
+}
 
 std::string EscapeJson( std::string_view value )
 {
@@ -227,15 +253,36 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
         error = "Unsupported session version";
         return false;
     }
+    if( !session.manifest.tracyFile.empty() && !SessionFileName( session.manifest.tracyFile ) )
+    {
+        error = "Tracy capture must be a file in the session directory";
+        return false;
+    }
     std::error_code ec;
     std::filesystem::create_directories( directory, ec );
     if( ec ) { error = ec.message(); return false; }
 
     const auto manifestPath = directory / "session.json";
-    const auto eventsPath = directory / "events.jsonl";
-    std::ofstream manifest( manifestPath, std::ios::binary | std::ios::trunc );
+    const auto generation = GenerationName();
+    const auto eventsFile = "events-" + generation + ".jsonl";
+    const auto eventsPath = directory / eventsFile;
+    const auto temporaryManifest = directory / ( "session-" + generation + ".tmp" );
+    if( std::filesystem::exists( eventsPath, ec ) || std::filesystem::exists( temporaryManifest, ec ) || ec )
+    {
+        error = "Session generation collision or path check failed";
+        return false;
+    }
+    std::ofstream manifest( temporaryManifest, std::ios::binary | std::ios::trunc );
     std::ofstream events( eventsPath, std::ios::binary | std::ios::trunc );
-    if( !manifest || !events ) { error = "Cannot open session files"; return false; }
+    if( !manifest || !events )
+    {
+        error = "Cannot open session files";
+        manifest.close();
+        events.close();
+        std::filesystem::remove( temporaryManifest, ec );
+        std::filesystem::remove( eventsPath, ec );
+        return false;
+    }
 
     manifest << "{\"version\":" << SessionVersion
         << ",\"process_id\":" << session.manifest.process.processId
@@ -261,6 +308,7 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
         << ",\"scene\":" << EscapeJson( session.manifest.scene )
         << ",\"capture_mode\":" << EscapeJson( session.manifest.captureMode )
         << ",\"event_count\":" << session.events.size()
+        << ",\"events_file\":" << EscapeJson( eventsFile )
         << ",\"tracy_file\":" << EscapeJson( session.manifest.tracyFile ) << "}\n";
 
     for( const auto& event : session.events )
@@ -299,7 +347,21 @@ bool SaveSession( const std::filesystem::path& directory, const Session& session
     }
     manifest.close();
     events.close();
-    if( !manifest || !events ) { error = "Session write failed"; return false; }
+    if( !manifest || !events )
+    {
+        error = "Session write failed; previous manifest remains intact";
+        std::filesystem::remove( temporaryManifest, ec );
+        std::filesystem::remove( eventsPath, ec );
+        return false;
+    }
+    std::filesystem::rename( temporaryManifest, manifestPath, ec );
+    if( ec )
+    {
+        error = "Cannot publish session manifest: " + ec.message();
+        std::filesystem::remove( temporaryManifest, ec );
+        std::filesystem::remove( eventsPath, ec );
+        return false;
+    }
     return true;
 }
 
@@ -307,8 +369,7 @@ bool LoadSession( const std::filesystem::path& directory, Session& session, std:
 {
     error.clear();
     std::ifstream manifest( directory / "session.json", std::ios::binary );
-    std::ifstream events( directory / "events.jsonl", std::ios::binary );
-    if( !manifest || !events ) { error = "Session file missing"; return false; }
+    if( !manifest ) { error = "Session manifest missing"; return false; }
 
     std::string line;
     if( !std::getline( manifest, line ) ) { error = "Empty manifest"; return false; }
@@ -329,6 +390,12 @@ bool LoadSession( const std::filesystem::path& directory, Session& session, std:
         return false;
     }
     loaded.manifest.process.processId = static_cast<uint32_t>( processId );
+    loaded.manifest.eventsFile = "events.jsonl";
+    if( Field( line, "events_file" ) && !ReadString( line, "events_file", loaded.manifest.eventsFile ) )
+    {
+        error = "Invalid event file name";
+        return false;
+    }
     ReadNumber( line, "bridge_missing", loaded.manifest.bridgeMissing );
     ReadNumber( line, "d3d12_events", loaded.manifest.d3d12Events );
     ReadNumber( line, "dxgk_events", loaded.manifest.dxgkEvents );
@@ -362,13 +429,23 @@ bool LoadSession( const std::filesystem::path& directory, Session& session, std:
         return false;
     }
     if( !loaded.manifest.tracyFile.empty() &&
-        ( std::filesystem::path( loaded.manifest.tracyFile ).is_absolute() ||
-          loaded.manifest.tracyFile.find( ".." ) != std::string::npos ||
-          !std::filesystem::is_regular_file( directory / loaded.manifest.tracyFile ) ) )
+        !SessionRegularFile( directory, loaded.manifest.tracyFile ) )
     {
         error = "Referenced Tracy capture is missing or outside the session";
         return false;
     }
+    if( !SessionFileName( loaded.manifest.eventsFile ) )
+    {
+        error = "Event file is outside the session";
+        return false;
+    }
+    if( !SessionRegularFile( directory, loaded.manifest.eventsFile ) )
+    {
+        error = "Event file missing or not a regular file";
+        return false;
+    }
+    std::ifstream events( directory / loaded.manifest.eventsFile, std::ios::binary );
+    if( !events ) { error = "Event file missing"; return false; }
     for( size_t lineNumber = 1; std::getline( events, line ); ++lineNumber )
     {
         Event event;
@@ -417,7 +494,7 @@ bool LoadFrameAnchors( const std::filesystem::path& file, std::vector<FrameAncho
 bool AppendPixCapture( const std::filesystem::path& file, const PixCaptureRecord& capture, std::string& error )
 {
     error.clear();
-    if( capture.fileName.empty() || capture.qpcEnd < capture.qpcBegin )
+    if( !SessionFileName( capture.fileName ) || capture.qpcEnd < capture.qpcBegin )
     {
         error = "Invalid PIX capture record";
         return false;
@@ -460,7 +537,7 @@ bool LoadPixCaptures( const std::filesystem::path& file, std::vector<PixCaptureR
             !ReadNumber( line, "end_result", endResult ) || endResult > UINT32_MAX ||
             !ReadNumber( line, "started", started ) || started > 1 ||
             !ReadNumber( line, "completed", completed ) || completed > 1 ||
-            !ReadString( line, "file_name", capture.fileName ) || capture.fileName.empty() ||
+            !ReadString( line, "file_name", capture.fileName ) || !SessionFileName( capture.fileName ) ||
             !ReadString( line, "error", capture.error ) )
         {
             error = "Invalid PIX capture record at line " + std::to_string( lineNumber );

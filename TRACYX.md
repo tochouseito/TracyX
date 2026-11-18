@@ -1,6 +1,6 @@
 # TracyX
 
-TracyX は [Tracy](https://github.com/wolfpld/tracy) の正式な GitHub Fork に、Windows / D3D12 の ETW 診断表示を追加するプロジェクトです。M0 / M1 の実装と再現手順は [tracyx/README.md](tracyx/README.md) にあります。
+TracyX は [Tracy](https://github.com/wolfpld/tracy) の正式な GitHub Fork に、Windows / D3D12 の ETW 診断表示を追加するプロジェクトです。Windows x64 の導入と配布手順は [tracyx/INSTALL_WINDOWS.md](tracyx/INSTALL_WINDOWS.md)、開発用のビルド・検証手順は [tracyx/README.md](tracyx/README.md) にあります。
 
 ## 上流との関係
 

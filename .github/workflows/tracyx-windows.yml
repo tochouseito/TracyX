@@ -3,6 +3,7 @@ name: TracyX Windows
 on:
   push:
     branches:
+      - master
       - codex/m0-m1-integrated-profiler
       - codex/issue-12-presentmon-metrics
       - codex/issue-13-pix-capture
@@ -12,6 +13,9 @@ on:
       - codex/issue-17-comparison
       - codex/issue-18-advanced-lanes
       - codex/issue-19-stability
+      - codex/issue-20-agent-recovery
+      - codex/issue-21-windows-package
+      - codex/issue-22-regression
   pull_request:
     branches:
       - master
@@ -79,6 +83,9 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $sdk $name))) { throw "$name was not found in $sdk" }
           }
           "TRACYX_PRESENTMON_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
+          $license = Join-Path $env:RUNNER_TEMP 'PresentMon-2.6.0-LICENSE.txt'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/GameTechDev/PresentMon/v2.6.0/LICENSE.txt' -OutFile $license
+          "TRACYX_PRESENTMON_LICENSE=$license" >> $env:GITHUB_ENV
       - name: Configure Agent and probes
         shell: pwsh
         run: |
@@ -98,3 +105,19 @@ jobs:
         run: cmake -S profiler -B build/profiler-ci -G "Visual Studio 18 2026" -A x64
       - name: Build Viewer
         run: cmake --build build/profiler-ci --config Debug --target tracy-profiler --parallel 2
+      - name: Configure and build Capture
+        run: |
+          cmake -S capture -B build/capture-ci -G "Visual Studio 18 2026" -A x64
+          cmake --build build/capture-ci --config Debug --target tracy-capture --parallel 2
+      - name: Package Windows Debug preview
+        shell: pwsh
+        run: |
+          $pixRoot = Join-Path $env:RUNNER_TEMP 'WinPixEventRuntime.1.0.240308001'
+          pwsh -NoProfile -File tracyx/scripts/package_windows.ps1 -Configuration Debug `
+            -AgentBuildDir build/tracyx-ci -ViewerBuildDir build/profiler-ci -CaptureBuildDir build/capture-ci `
+            -DxTimingRoot $env:TRACYX_DX_TIMING_ROOT -VendorCache build/profiler-ci/.cpm-cache `
+            -WinPixRoot $pixRoot -PresentMonLicense $env:TRACYX_PRESENTMON_LICENSE -OutputDirectory build/dist-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TracyX-windows-x64-debug-preview
+          path: build/dist-ci/*.zip

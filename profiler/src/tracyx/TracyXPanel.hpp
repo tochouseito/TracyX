@@ -89,6 +89,7 @@ private:
     std::atomic<bool> m_liveDisconnected{ false };
     std::thread m_liveThread;
     std::mutex m_liveMutex;
+    std::string m_liveError;
     std::deque<tracyx::WireBatch> m_liveQueue;
 };
 
