@@ -16,13 +16,15 @@
 | Tracy と表示メトリクス | 同時 Capture で `tracy.tracy` を保存。Agent は `.tracy` とイベントファイルを参照する `session.json` を保存。PresentMon 指標のイベントが同じセッションに入ることを確認。 |
 | ZIP 配布 | Debug ZIP に Agent、Viewer、Capture、任意 Probe、SDK、導入手順、第三者ライセンスを収録。170 ファイルの SHA-256 再計算で不一致 0。展開した ZIP の Probe＋Agent＋Capture で実セッションを保存。 |
 | Release ZIP | Agent、Probe、Capture、Viewer を Release でビルド。ZIP は 171 ファイル、SHA-256 不一致 0。ZIP 内の実行ファイルで 900 Frame を収集し、対象・Agent・Capture は終了コード 0。Live Pipe は 3 回再接続でき、18,909 件の保存・再読込に成功。ETW loss／Agent drop は 0。 |
+| Viewer オフライン表示 | 上記 Release セッションの `tracy.tracy` を Viewer で直接開き、`session.json` と 18,909 件の外部イベントを自動読込。DX キュー 5 本と Present の 2 Swap Chain レーンを表示し、Tracy／ETW 時刻の整列を確認。Present イベントの Inspector に表示間隔 16.652 ms、GPU busy 0.374 ms、表示遅延 298.863 ms、Tracy Frame との時間重複が表示された。 |
+| Viewer Live 接続 | Release ZIP の Probe と Agent を実行中、同じ ZIP の Viewer を `-a 127.0.0.1` で接続。Frame 数が 1,277 まで増加し、DX パネルには外部イベント 25,375 件、整列済み 23,938 件が表示された。その後、検証用 Probe を終了して Agent が 25,838 件、ETW loss／Agent drop 0 で保存した。 |
 | 一般 C++ アプリ | Release ZIP の `TracyXProbeCpp.exe` と `tracy-capture.exe -s 1` で 256,335 byte の `.tracy` を保存し、両者は終了コード 0。メモリプールの未解放 0、失敗割当 1 件。 |
 | パッケージ失敗 | Vendor ライセンスのない入力で生成を中断し、不完全なディレクトリと ZIP が残らないことを確認。 |
 | メモリアダプタ | ZIP の C++ Probe で named pool と arena reset を実行し、終了時の未解放は 0。失敗割当 1 件を記録。Debug 単発の中央値は無計測 184.5 ns/op、計測あり 2191.6 ns/op。 |
 
 ## 制限と次の確認
 
-- Viewer の新しいバイナリは Debug でビルドできた。初回起動で Windows ファイアウォールの許可画面が出たため、UI 操作によるオフライン読込と Live Inspector の確認は保留した。Core の読込経路はテスト済み。
+- Viewer のオフライン読込と Present Inspector は UI で確認した。Live 接続と Frame／外部イベントの更新も確認したが、Probe の起動パスを変えると Windows ファイアウォールの許可画面が再表示され、Live Inspector の操作は完了していない。セキュリティ画面は自動操作していない。
 - DirectStorage の実 I/O → Agent 保存、DRED sidecar の構文・取込、PIX GPU／Timing と Viewer の各表示は M3 の個別検証に記録した。Tracy FrameMark を持つ DirectStorage 実アプリ、実際の device removal、高負荷 PIX Capture を組み合わせた端から端までの実行は未確認。
 - Live Pipe の同一ログオン接続は確認した。異なる Windows ログオンセッションからの拒否は実機で未確認。ACL はログオン SID と SYSTEM のみ、リモートクライアントは拒否する設定。
 - Release ZIP のビルド・SHA-256 検証はクリーンな GitHub Windows runner でも成功した。新しい Windows 環境での Visual C++ Runtime、PresentMon Service、PIX のセットアップと、公開 GitHub Release への添付ジョブは未確認。公開 Release の添付経路はタグ `tracyx-v*` に限定して用意した。
